@@ -17,6 +17,10 @@ Current mappings:
 - `F1` / `Help`: open `/home/jakob/Downloads/`
 - `Alt+F7`: open `https://nextcloud.jackandjake.at/apps/files/files`
 
+The tray menu contains a configuration assistant where `F1` through `F11` can
+be mapped to either local paths or links. It also supports modifier variants
+such as `Alt+F7`, `Ctrl+F4`, `Meta+F2`, or `Shift+F9`.
+
 ## Tray
 
 Start the tray helper:
