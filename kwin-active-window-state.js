@@ -1,0 +1,135 @@
+const DBUS_SERVICE = "at.jackandjake.WaylandAutomation";
+const DBUS_PATH = "/at/jackandjake/WaylandAutomation";
+const DBUS_INTERFACE = "at.jackandjake.WaylandAutomation";
+
+function textProperty(window, propertyName) {
+    try {
+        const value = window ? window[propertyName] : "";
+        return value === undefined || value === null ? "" : String(value);
+    } catch (error) {
+        return "";
+    }
+}
+
+function boolProperty(window, propertyName) {
+    try {
+        return window ? Boolean(window[propertyName]) : false;
+    } catch (error) {
+        return false;
+    }
+}
+
+function typeText(window) {
+    const flags = [];
+    if (boolProperty(window, "dialog")) {
+        flags.push("dialog");
+    }
+    if (boolProperty(window, "modal")) {
+        flags.push("modal");
+    }
+    if (boolProperty(window, "transient")) {
+        flags.push("transient");
+    }
+    if (boolProperty(window, "normalWindow")) {
+        flags.push("normal");
+    }
+    const type = textProperty(window, "windowType");
+    if (type) {
+        flags.push("type=" + type);
+    }
+    return flags.join(",");
+}
+
+function activeWindowLooksLikeFileDialog(window, caption, resourceClass, resourceName, role) {
+    if (!window) {
+        return false;
+    }
+
+    const haystack = [
+        caption,
+        resourceClass,
+        resourceName,
+        role,
+    ].join(" ").toLowerCase();
+
+    const strongMarkers = [
+        "file dialog",
+        "filedialog",
+        "file chooser",
+        "filechooser",
+        "gtkfilechooser",
+        "kfilewidget",
+        "kfiledialog",
+    ];
+    for (let i = 0; i < strongMarkers.length; i++) {
+        if (haystack.indexOf(strongMarkers[i]) !== -1) {
+            return true;
+        }
+    }
+
+    const type = textProperty(window, "windowType");
+    const dialogLike = boolProperty(window, "dialog")
+        || boolProperty(window, "modal")
+        || boolProperty(window, "transient")
+        || !boolProperty(window, "normalWindow")
+        || (type !== "" && type !== "0");
+    if (!dialogLike) {
+        return false;
+    }
+
+    const dialogMarkers = [
+        "open file",
+        "save file",
+        "save as",
+        "select file",
+        "select folder",
+        "choose file",
+        "choose folder",
+        "datei öffnen",
+        "datei speichern",
+        "speichern unter",
+        "ordner auswählen",
+        "datei auswählen",
+        "öffnen",
+        "speichern",
+    ];
+
+    for (let i = 0; i < dialogMarkers.length; i++) {
+        if (haystack.indexOf(dialogMarkers[i]) !== -1) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function reportActiveWindow() {
+    const window = workspace.activeWindow;
+    const caption = textProperty(window, "caption");
+    const resourceClass = textProperty(window, "resourceClass");
+    const resourceName = textProperty(window, "resourceName");
+    const role = textProperty(window, "windowRole");
+    const windowType = typeText(window);
+    const isFileDialog = activeWindowLooksLikeFileDialog(
+        window,
+        caption,
+        resourceClass,
+        resourceName,
+        role
+    );
+
+    callDBus(
+        DBUS_SERVICE,
+        DBUS_PATH,
+        DBUS_INTERFACE,
+        "SetActiveWindow",
+        isFileDialog,
+        caption,
+        resourceClass,
+        resourceName,
+        role,
+        windowType
+    );
+}
+
+workspace.windowActivated.connect(reportActiveWindow);
+reportActiveWindow();

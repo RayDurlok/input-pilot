@@ -17,9 +17,11 @@ from urllib.parse import urlparse
 CONFIG_FILE = Path.home() / ".config/wayland-automation/shortcuts.json"
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
 LOG_FILE = STATE_DIR / "wayland-automation/configured-shortcuts.log"
+ACTIVE_WINDOW_FILE = STATE_DIR / "wayland-automation/active-window.json"
 DEFAULT_YDOTOOL_SOCKET = "/tmp/ydotool_socket"
 DIALOG_TRIGGER_SETTLE_SECONDS = 0.8
 CLIPBOARD_RESTORE_DELAY_SECONDS = 1.5
+ACTIVE_WINDOW_MAX_AGE_SECONDS = 6 * 60 * 60
 
 
 class AutomationError(RuntimeError):
@@ -174,15 +176,49 @@ def open_in_file_dialog(directory: str) -> None:
                 pass
 
 
+def active_window_is_file_dialog() -> bool:
+    try:
+        with ACTIVE_WINDOW_FILE.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        log_event("auto-dialog state=missing")
+        return False
+
+    try:
+        timestamp = datetime.fromisoformat(str(data.get("timestamp", "")))
+        age = (datetime.now().astimezone() - timestamp).total_seconds()
+    except ValueError:
+        log_event("auto-dialog state=invalid-timestamp")
+        return False
+
+    if age > ACTIVE_WINDOW_MAX_AGE_SECONDS:
+        log_event(f"auto-dialog state=stale age={age:.1f}")
+        return False
+
+    is_file_dialog = bool(data.get("is_file_dialog"))
+    caption = str(data.get("caption", ""))
+    resource_class = str(data.get("resource_class", ""))
+    log_event(
+        "auto-dialog "
+        f"state={'file-dialog' if is_file_dialog else 'normal'} "
+        f"caption={caption!r} class={resource_class!r}"
+    )
+    return is_file_dialog
+
+
 def main() -> int:
+    auto_mode = False
     dialog_mode = False
     args = sys.argv[1:]
+    if args and args[0] == "--auto":
+        auto_mode = True
+        args = args[1:]
     if args and args[0] == "--dialog":
         dialog_mode = True
         args = args[1:]
 
     if len(args) != 1:
-        print("Usage: open-configured-target.py [--dialog] F1", file=sys.stderr)
+        print("Usage: open-configured-target.py [--auto|--dialog] F1", file=sys.stderr)
         return 2
 
     key = canonical_shortcut(args[0])
@@ -191,10 +227,13 @@ def main() -> int:
         return 0
 
     normalized = normalize_target(target)
+    if auto_mode and Path(normalized).is_dir() and active_window_is_file_dialog():
+        dialog_mode = True
+
     if dialog_mode:
         if not Path(normalized).is_dir():
             return 0
-        log_invocation(key, normalized, "dialog")
+        log_invocation(key, normalized, "auto-dialog" if auto_mode else "dialog")
         try:
             open_in_file_dialog(normalized)
         except AutomationError as exc:

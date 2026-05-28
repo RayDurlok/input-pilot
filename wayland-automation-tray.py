@@ -9,13 +9,14 @@ import os
 import signal
 import shutil
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("AppIndicator3", "0.1")
-from gi.repository import AppIndicator3, GLib, Gtk  # noqa: E402
+from gi.repository import AppIndicator3, Gio, GLib, Gtk  # noqa: E402
 
 
 APP_ID = "wayland-automation"
@@ -25,7 +26,14 @@ CLICK_IMAGE = SCRIPT_DIR / "wayland-click-image.py"
 DEFAULT_TEMPLATE = Path.home() / "Pictures/button-templates/resolve-render.png"
 DEFAULT_YDOTOOL_SOCKET = "/tmp/ydotool_socket"
 CONFIG_FILE = Path.home() / ".config/wayland-automation/shortcuts.json"
+STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+ACTIVE_WINDOW_FILE = STATE_DIR / "wayland-automation/active-window.json"
 OPEN_CONFIGURED_TARGET = SCRIPT_DIR / "open-configured-target.py"
+KWIN_ACTIVE_WINDOW_SCRIPT = SCRIPT_DIR / "kwin-active-window-state.js"
+KWIN_ACTIVE_WINDOW_SCRIPT_NAME = "wayland-automation-active-window-state"
+DBUS_NAME = "at.jackandjake.WaylandAutomation"
+DBUS_OBJECT = "/at/jackandjake/WaylandAutomation"
+DBUS_INTERFACE = "at.jackandjake.WaylandAutomation"
 FUNCTION_KEYS = [f"F{number}" for number in range(1, 12)]
 MODIFIER_OPTIONS = ["", "Alt", "Ctrl", "Meta", "Shift", "Ctrl+Alt", "Meta+Alt"]
 MODIFIER_CODES = {
@@ -93,6 +101,102 @@ def notify(title: str, message: str) -> None:
         run_detached(["notify-send", title, message])
 
 
+def write_active_window_state(
+    is_file_dialog: bool,
+    caption: str,
+    resource_class: str,
+    resource_name: str,
+    window_role: str,
+    window_type: str,
+) -> None:
+    ACTIVE_WINDOW_FILE.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "is_file_dialog": is_file_dialog,
+        "caption": caption,
+        "resource_class": resource_class,
+        "resource_name": resource_name,
+        "window_role": window_role,
+        "window_type": window_type,
+        "pid": os.getpid(),
+    }
+    with ACTIVE_WINDOW_FILE.open("w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
+def clear_active_window_state() -> None:
+    write_active_window_state(False, "", "", "", "", "")
+
+
+class AutomationDBusService:
+    introspection = Gio.DBusNodeInfo.new_for_xml(
+        f"""
+        <node>
+          <interface name="{DBUS_INTERFACE}">
+            <method name="SetActiveWindow">
+              <arg type="b" name="is_file_dialog" direction="in"/>
+              <arg type="s" name="caption" direction="in"/>
+              <arg type="s" name="resource_class" direction="in"/>
+              <arg type="s" name="resource_name" direction="in"/>
+              <arg type="s" name="window_role" direction="in"/>
+              <arg type="s" name="window_type" direction="in"/>
+            </method>
+          </interface>
+        </node>
+        """
+    )
+
+    def __init__(self) -> None:
+        self.connection: Gio.DBusConnection | None = None
+        self.registration_id = 0
+        self.owner_id = Gio.bus_own_name(
+            Gio.BusType.SESSION,
+            DBUS_NAME,
+            Gio.BusNameOwnerFlags.REPLACE,
+            self.on_bus_acquired,
+            None,
+            None,
+        )
+
+    def on_bus_acquired(self, connection: Gio.DBusConnection, _name: str) -> None:
+        self.connection = connection
+        self.registration_id = connection.register_object(
+            DBUS_OBJECT,
+            self.introspection.interfaces[0],
+            self.handle_method_call,
+            None,
+            None,
+        )
+
+    def handle_method_call(
+        self,
+        _connection: Gio.DBusConnection,
+        _sender: str,
+        _object_path: str,
+        _interface_name: str,
+        method_name: str,
+        parameters: GLib.Variant,
+        invocation: Gio.DBusMethodInvocation,
+    ) -> None:
+        if method_name == "SetActiveWindow":
+            write_active_window_state(*parameters.unpack())
+            invocation.return_value(None)
+            return
+        invocation.return_dbus_error(
+            f"{DBUS_INTERFACE}.Error.UnknownMethod",
+            f"Unknown method: {method_name}",
+        )
+
+    def shutdown(self) -> None:
+        if self.connection and self.registration_id:
+            self.connection.unregister_object(self.registration_id)
+            self.registration_id = 0
+        if self.owner_id:
+            Gio.bus_unown_name(self.owner_id)
+            self.owner_id = 0
+
+
 def load_shortcuts() -> dict[str, str]:
     if not CONFIG_FILE.exists():
         return {"F1": "/home/jakob/Downloads/"}
@@ -149,7 +253,7 @@ def write_desktop_file(shortcut: str, target: str) -> str:
                 "Type=Application",
                 f"Name=Open configured target {shortcut}",
                 f"Comment=Open configured Wayland Automation target for {shortcut}",
-                f"Exec={OPEN_CONFIGURED_TARGET} {shortcut}",
+                f"Exec={OPEN_CONFIGURED_TARGET} --auto {shortcut}",
                 "Icon=system-run",
                 "Terminal=false",
                 "NoDisplay=true",
@@ -194,6 +298,40 @@ def write_dialog_desktop_file(function_key: str, target: str) -> str:
 
 def run_checked(command: list[str]) -> None:
     subprocess.run(command, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def kwin_scripting_call(*args: str) -> None:
+    if not shutil.which("busctl"):
+        return
+    run_checked(
+        [
+            "busctl",
+            "--user",
+            "call",
+            "org.kde.KWin",
+            "/Scripting",
+            "org.kde.kwin.Scripting",
+            *args,
+        ]
+    )
+
+
+def load_kwin_active_window_script() -> None:
+    if not KWIN_ACTIVE_WINDOW_SCRIPT.exists():
+        return
+    unload_kwin_active_window_script()
+    kwin_scripting_call(
+        "loadScript",
+        "s",
+        str(KWIN_ACTIVE_WINDOW_SCRIPT),
+    )
+    kwin_scripting_call("start")
+
+
+def unload_kwin_active_window_script() -> None:
+    kwin_scripting_call("unloadScript", "s", str(KWIN_ACTIVE_WINDOW_SCRIPT))
+    kwin_scripting_call("unloadScript", "s", KWIN_ACTIVE_WINDOW_SCRIPT_NAME)
+    clear_active_window_state()
 
 
 def register_shortcut(shortcut: str, target: str) -> None:
@@ -494,6 +632,8 @@ class AutomationTray:
     def __init__(self, template: Path, ydotool_socket: str | None) -> None:
         self.template = template
         self.ydotool_socket = ydotool_socket
+        clear_active_window_state()
+        self.dbus_service = AutomationDBusService()
         self.indicator = AppIndicator3.Indicator.new(
             APP_ID,
             "preferences-desktop-keyboard",
@@ -505,9 +645,14 @@ class AutomationTray:
         self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
         self.indicator.set_menu(self.build_menu())
         GLib.timeout_add_seconds(1, self.activate_shortcuts)
+        GLib.timeout_add_seconds(1, self.activate_window_detection)
 
     def activate_shortcuts(self) -> bool:
         apply_shortcuts(load_shortcuts())
+        return False
+
+    def activate_window_detection(self) -> bool:
+        load_kwin_active_window_script()
         return False
 
     def build_menu(self) -> Gtk.Menu:
@@ -556,6 +701,8 @@ class AutomationTray:
 
     def quit(self, _item: Gtk.MenuItem) -> None:
         deactivate_shortcuts()
+        unload_kwin_active_window_script()
+        self.dbus_service.shutdown()
         Gtk.main_quit()
 
 
@@ -714,17 +861,25 @@ def main() -> int:
         print(f"ydotool: {check_ydotool(args.ydotool_socket)}")
         return 0
 
+    tray: AutomationTray | None = None
+
     def stop_tray(_signum=None, _frame=None):
         deactivate_shortcuts()
+        unload_kwin_active_window_script()
+        if tray:
+            tray.dbus_service.shutdown()
         Gtk.main_quit()
 
     signal.signal(signal.SIGINT, stop_tray)
     signal.signal(signal.SIGTERM, stop_tray)
 
     apply_shortcuts(load_shortcuts())
-    AutomationTray(args.template.expanduser(), args.ydotool_socket)
+    tray = AutomationTray(args.template.expanduser(), args.ydotool_socket)
     Gtk.main()
     deactivate_shortcuts()
+    unload_kwin_active_window_script()
+    if tray:
+        tray.dbus_service.shutdown()
     return 0
 
 
