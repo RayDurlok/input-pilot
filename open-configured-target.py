@@ -18,6 +18,7 @@ CONFIG_FILE = Path.home() / ".config/wayland-automation/shortcuts.json"
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
 LOG_FILE = STATE_DIR / "wayland-automation/configured-shortcuts.log"
 DEFAULT_YDOTOOL_SOCKET = "/tmp/ydotool_socket"
+DIALOG_TRIGGER_SETTLE_SECONDS = 0.3
 
 
 class AutomationError(RuntimeError):
@@ -132,6 +133,8 @@ def open_in_file_dialog(directory: str) -> None:
     old_clipboard = clipboard_text()
     try:
         set_clipboard(directory)
+        # Global shortcuts fire before the physical modifier keys are always up.
+        time.sleep(DIALOG_TRIGGER_SETTLE_SECONDS)
         # Ctrl+L focuses the location field in common KDE/GTK file dialogs.
         ydotool_key("29:1", "38:1", "38:0", "29:0")
         time.sleep(0.12)
