@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -15,6 +17,11 @@ from urllib.parse import urlparse
 CONFIG_FILE = Path.home() / ".config/wayland-automation/shortcuts.json"
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
 LOG_FILE = STATE_DIR / "wayland-automation/configured-shortcuts.log"
+DEFAULT_YDOTOOL_SOCKET = "/tmp/ydotool_socket"
+
+
+class AutomationError(RuntimeError):
+    pass
 
 
 def canonical_shortcut(shortcut: str) -> str:
@@ -56,25 +63,119 @@ def normalize_target(target: str) -> str:
     return str(Path(target).expanduser())
 
 
-def log_invocation(key: str, target: str) -> None:
+def log_invocation(key: str, target: str, mode: str) -> None:
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
     with LOG_FILE.open("a", encoding="utf-8") as handle:
-        handle.write(f"{timestamp} key={key} target={target} pid={os.getpid()}\n")
+        handle.write(
+            f"{timestamp} mode={mode} key={key} target={target} pid={os.getpid()}\n"
+        )
+
+
+def notify(message: str) -> None:
+    if shutil.which("notify-send"):
+        subprocess.Popen(
+            ["notify-send", "Wayland Automation", message],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+
+def clipboard_text() -> str | None:
+    try:
+        result = subprocess.run(
+            ["wl-paste", "--no-newline"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def set_clipboard(text: str) -> None:
+    try:
+        subprocess.run(
+            ["wl-copy"],
+            input=text,
+            text=True,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError as exc:
+        raise AutomationError("wl-copy ist nicht installiert.") from exc
+    except subprocess.CalledProcessError as exc:
+        raise AutomationError("wl-copy konnte den Pfad nicht in die Zwischenablage legen.") from exc
+
+
+def ydotool_key(*events: str) -> None:
+    env = dict(os.environ)
+    env.setdefault("YDOTOOL_SOCKET", DEFAULT_YDOTOOL_SOCKET)
+    try:
+        subprocess.run(["ydotool", "key", *events], env=env, check=True)
+    except FileNotFoundError as exc:
+        raise AutomationError("ydotool ist nicht installiert.") from exc
+    except subprocess.CalledProcessError as exc:
+        raise AutomationError(
+            f"ydotool ist nicht erreichbar. Socket: {env.get('YDOTOOL_SOCKET')}"
+        ) from exc
+
+
+def open_in_file_dialog(directory: str) -> None:
+    old_clipboard = clipboard_text()
+    try:
+        set_clipboard(directory)
+        # Ctrl+L focuses the location field in common KDE/GTK file dialogs.
+        ydotool_key("29:1", "38:1", "38:0", "29:0")
+        time.sleep(0.12)
+        ydotool_key("29:1", "47:1", "47:0", "29:0")
+        time.sleep(0.08)
+        ydotool_key("28:1", "28:0")
+    finally:
+        if old_clipboard is not None:
+            time.sleep(0.2)
+            try:
+                set_clipboard(old_clipboard)
+            except AutomationError:
+                pass
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print("Usage: open-configured-target.py F1", file=sys.stderr)
+    dialog_mode = False
+    args = sys.argv[1:]
+    if args and args[0] == "--dialog":
+        dialog_mode = True
+        args = args[1:]
+
+    if len(args) != 1:
+        print("Usage: open-configured-target.py [--dialog] F1", file=sys.stderr)
         return 2
 
-    key = canonical_shortcut(sys.argv[1])
+    key = canonical_shortcut(args[0])
     target = load_config().get(key, "").strip()
     if not target:
         return 0
 
     normalized = normalize_target(target)
-    log_invocation(key, normalized)
+    if dialog_mode:
+        if not Path(normalized).is_dir():
+            return 0
+        log_invocation(key, normalized, "dialog")
+        try:
+            open_in_file_dialog(normalized)
+        except AutomationError as exc:
+            notify(str(exc))
+            return 1
+        return 0
+
+    log_invocation(key, normalized, "open")
     subprocess.Popen(["xdg-open", normalized], start_new_session=True)
     return 0
 

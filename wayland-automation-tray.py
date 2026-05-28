@@ -34,6 +34,7 @@ MODIFIER_CODES = {
     "Meta": 0x10000000,
     "Shift": 0x02000000,
 }
+DIALOG_MODIFIER = "Shift"
 QT_KEY_F1 = 16777264
 QT_KEY_HELP = 16777304
 
@@ -128,6 +129,10 @@ def desktop_id_for(shortcut: str) -> str:
     return f"wayland-automation-configured-{safe}.desktop"
 
 
+def dialog_desktop_id_for(function_key: str) -> str:
+    return f"wayland-automation-dialog-{function_key.lower()}.desktop"
+
+
 def component_path_for(desktop_id: str) -> str:
     safe = desktop_id.replace(".", "_").replace("-", "_")
     return f"/component/{safe}"
@@ -160,6 +165,33 @@ def write_desktop_file(shortcut: str, target: str) -> str:
     return desktop_id
 
 
+def write_dialog_desktop_file(function_key: str, target: str) -> str:
+    desktop_id = dialog_desktop_id_for(function_key)
+    desktop_path = Path.home() / ".local/share/applications" / desktop_id
+    desktop_path.parent.mkdir(parents=True, exist_ok=True)
+    desktop_path.write_text(
+        "\n".join(
+            [
+                "[Desktop Entry]",
+                "Type=Application",
+                f"Name=Use configured folder {function_key} in dialog",
+                f"Comment=Use configured Wayland Automation folder for {function_key} in a file dialog",
+                f"Exec={OPEN_CONFIGURED_TARGET} --dialog {function_key}",
+                "Icon=folder-open",
+                "Terminal=false",
+                "NoDisplay=true",
+                "StartupNotify=false",
+                "Categories=Utility;",
+                "X-KDE-GlobalAccel-CommandShortcut=true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    desktop_path.chmod(0o644)
+    return desktop_id
+
+
 def run_checked(command: list[str]) -> None:
     subprocess.run(command, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -169,6 +201,71 @@ def register_shortcut(shortcut: str, target: str) -> None:
     desktop_id = write_desktop_file(shortcut, target)
     name = f"Open configured target {shortcut}"
     codes = key_codes_for(modifier, function_key)
+
+    if shutil.which("kbuildsycoca6"):
+        run_checked(["kbuildsycoca6"])
+
+    if shutil.which("kwriteconfig6"):
+        run_checked(
+            [
+                "kwriteconfig6",
+                "--file",
+                str(Path.home() / ".config/kglobalshortcutsrc"),
+                "--group",
+                "services",
+                "--group",
+                desktop_id,
+                "--key",
+                "_launch",
+                f"{shortcut},{shortcut},{name}",
+            ]
+        )
+
+    if shutil.which("busctl"):
+        run_checked(
+            [
+                "busctl",
+                "--user",
+                "call",
+                "org.kde.kglobalaccel",
+                "/kglobalaccel",
+                "org.kde.KGlobalAccel",
+                "doRegister",
+                "as",
+                "4",
+                desktop_id,
+                "_launch",
+                name,
+                name,
+            ]
+        )
+        run_checked(
+            [
+                "busctl",
+                "--user",
+                "call",
+                "org.kde.kglobalaccel",
+                "/kglobalaccel",
+                "org.kde.KGlobalAccel",
+                "setShortcut",
+                "asaiu",
+                "4",
+                desktop_id,
+                "_launch",
+                name,
+                name,
+                str(len(codes)),
+                *[str(code) for code in codes],
+                "6",
+            ]
+        )
+
+
+def register_dialog_shortcut(function_key: str, target: str) -> None:
+    desktop_id = write_dialog_desktop_file(function_key, target)
+    shortcut = shortcut_label(DIALOG_MODIFIER, function_key)
+    name = f"Use configured folder {function_key} in dialog"
+    codes = key_codes_for(DIALOG_MODIFIER, function_key)
 
     if shutil.which("kbuildsycoca6"):
         run_checked(["kbuildsycoca6"])
@@ -266,6 +363,43 @@ def unregister_shortcut(shortcut: str) -> None:
     desktop_path.unlink(missing_ok=True)
 
 
+def unregister_dialog_shortcut(function_key: str) -> None:
+    desktop_id = dialog_desktop_id_for(function_key)
+    desktop_path = Path.home() / ".local/share/applications" / desktop_id
+    if shutil.which("busctl"):
+        run_checked(
+            [
+                "busctl",
+                "--user",
+                "call",
+                "org.kde.kglobalaccel",
+                "/kglobalaccel",
+                "org.kde.KGlobalAccel",
+                "unregister",
+                "ss",
+                desktop_id,
+                "_launch",
+            ]
+        )
+    if shutil.which("kwriteconfig6"):
+        run_checked(
+            [
+                "kwriteconfig6",
+                "--file",
+                str(Path.home() / ".config/kglobalshortcutsrc"),
+                "--group",
+                "services",
+                "--group",
+                desktop_id,
+                "--key",
+                "_launch",
+                "--delete",
+                "",
+            ]
+        )
+    desktop_path.unlink(missing_ok=True)
+
+
 def disable_legacy_shortcuts() -> None:
     legacy_desktop_ids = [
         "codex-open-downloads.desktop",
@@ -302,12 +436,22 @@ def apply_shortcuts(shortcuts: dict[str, str]) -> None:
             elif shortcut not in configured:
                 unregister_shortcut(shortcut)
 
+    for function_key in FUNCTION_KEYS:
+        target = shortcuts.get(function_key, "").strip()
+        dialog_shortcut = shortcut_label(DIALOG_MODIFIER, function_key)
+        if target and Path(target).expanduser().is_dir() and dialog_shortcut not in shortcuts:
+            register_dialog_shortcut(function_key, str(Path(target).expanduser()))
+        else:
+            unregister_dialog_shortcut(function_key)
+
 
 def deactivate_shortcuts() -> None:
     disable_legacy_shortcuts()
     for modifier in MODIFIER_OPTIONS:
         for function_key in FUNCTION_KEYS:
             unregister_shortcut(shortcut_label(modifier, function_key))
+    for function_key in FUNCTION_KEYS:
+        unregister_dialog_shortcut(function_key)
 
 
 def check_ydotool(socket: str | None = None) -> str:

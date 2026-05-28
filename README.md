@@ -25,6 +25,13 @@ Configured shortcuts are active while the tray helper is running. Choosing
 `Beenden` in the tray menu unregisters them so the function keys return to
 their normal application behavior.
 
+When a plain function key target is a local folder, the tray also registers a
+file-dialog helper shortcut. For example, if `F1` points to `/home/jakob/Downloads/`,
+`Shift+F1` can be used inside common Save/Open dialogs to jump to that folder.
+It works by focusing the dialog location field, pasting the folder path, and
+pressing Enter. This helper needs `ydotoold` on `/tmp/ydotool_socket` and the
+Wayland clipboard tools `wl-copy` / `wl-paste`.
+
 ## Tray
 
 Start the tray helper:
