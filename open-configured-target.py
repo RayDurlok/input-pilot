@@ -19,8 +19,11 @@ STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
 LOG_FILE = STATE_DIR / "wayland-automation/configured-shortcuts.log"
 ACTIVE_WINDOW_FILE = STATE_DIR / "wayland-automation/active-window.json"
 DEFAULT_YDOTOOL_SOCKET = "/tmp/ydotool_socket"
-DIALOG_TRIGGER_SETTLE_SECONDS = 0.8
-CLIPBOARD_RESTORE_DELAY_SECONDS = 1.5
+AUTO_DIALOG_TRIGGER_SETTLE_SECONDS = 0.08
+EXPLICIT_DIALOG_TRIGGER_SETTLE_SECONDS = 0.35
+LOCATION_FOCUS_DELAY_SECONDS = 0.1
+PASTE_SETTLE_DELAY_SECONDS = 0.08
+CLIPBOARD_RESTORE_DELAY_SECONDS = 0.7
 ACTIVE_WINDOW_MAX_AGE_SECONDS = 6 * 60 * 60
 
 
@@ -147,23 +150,22 @@ def ydotool_key(*events: str) -> None:
         )
 
 
-def open_in_file_dialog(directory: str) -> None:
+def open_in_file_dialog(directory: str, trigger_settle_seconds: float) -> None:
     old_clipboard = clipboard_text()
     try:
         set_clipboard(directory)
         log_event(f"dialog-step clipboard-set target={directory}")
         # Global shortcuts fire before the physical modifier keys are always up.
-        time.sleep(DIALOG_TRIGGER_SETTLE_SECONDS)
+        time.sleep(trigger_settle_seconds)
         # Ctrl+L focuses the location field in common KDE/GTK file dialogs.
         ydotool_key("29:1", "38:1", "38:0", "29:0")
         log_event("dialog-step sent=ctrl+l")
-        time.sleep(0.2)
+        time.sleep(LOCATION_FOCUS_DELAY_SECONDS)
         ydotool_key("29:1", "30:1", "30:0", "29:0")
         log_event("dialog-step sent=ctrl+a")
-        time.sleep(0.08)
         ydotool_key("29:1", "47:1", "47:0", "29:0")
         log_event("dialog-step sent=ctrl+v")
-        time.sleep(0.2)
+        time.sleep(PASTE_SETTLE_DELAY_SECONDS)
         ydotool_key("28:1", "28:0")
         log_event("dialog-step sent=enter")
     finally:
@@ -235,7 +237,12 @@ def main() -> int:
             return 0
         log_invocation(key, normalized, "auto-dialog" if auto_mode else "dialog")
         try:
-            open_in_file_dialog(normalized)
+            settle_seconds = (
+                AUTO_DIALOG_TRIGGER_SETTLE_SECONDS
+                if auto_mode
+                else EXPLICIT_DIALOG_TRIGGER_SETTLE_SECONDS
+            )
+            open_in_file_dialog(normalized, settle_seconds)
         except AutomationError as exc:
             notify(str(exc))
             return 1
