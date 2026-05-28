@@ -18,7 +18,8 @@ CONFIG_FILE = Path.home() / ".config/wayland-automation/shortcuts.json"
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
 LOG_FILE = STATE_DIR / "wayland-automation/configured-shortcuts.log"
 DEFAULT_YDOTOOL_SOCKET = "/tmp/ydotool_socket"
-DIALOG_TRIGGER_SETTLE_SECONDS = 0.3
+DIALOG_TRIGGER_SETTLE_SECONDS = 0.8
+CLIPBOARD_RESTORE_DELAY_SECONDS = 1.5
 
 
 class AutomationError(RuntimeError):
@@ -65,12 +66,14 @@ def normalize_target(target: str) -> str:
 
 
 def log_invocation(key: str, target: str, mode: str) -> None:
+    log_event(f"mode={mode} key={key} target={target} pid={os.getpid()}")
+
+
+def log_event(message: str) -> None:
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
     with LOG_FILE.open("a", encoding="utf-8") as handle:
-        handle.write(
-            f"{timestamp} mode={mode} key={key} target={target} pid={os.getpid()}\n"
-        )
+        handle.write(f"{timestamp} {message}\n")
 
 
 def notify(message: str) -> None:
@@ -120,32 +123,53 @@ def ydotool_key(*events: str) -> None:
     env = dict(os.environ)
     env.setdefault("YDOTOOL_SOCKET", DEFAULT_YDOTOOL_SOCKET)
     try:
-        subprocess.run(["ydotool", "key", *events], env=env, check=True)
+        result = subprocess.run(
+            ["ydotool", "key", *events],
+            env=env,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=2,
+        )
     except FileNotFoundError as exc:
         raise AutomationError("ydotool ist nicht installiert.") from exc
-    except subprocess.CalledProcessError as exc:
+    except subprocess.TimeoutExpired as exc:
+        raise AutomationError("ydotool hat nicht innerhalb von 2 Sekunden reagiert.") from exc
+    if result.returncode != 0:
+        detail = result.stdout.strip()
+        if detail:
+            log_event(f"ydotool-error output={detail!r}")
         raise AutomationError(
             f"ydotool ist nicht erreichbar. Socket: {env.get('YDOTOOL_SOCKET')}"
-        ) from exc
+        )
 
 
 def open_in_file_dialog(directory: str) -> None:
     old_clipboard = clipboard_text()
     try:
         set_clipboard(directory)
+        log_event(f"dialog-step clipboard-set target={directory}")
         # Global shortcuts fire before the physical modifier keys are always up.
         time.sleep(DIALOG_TRIGGER_SETTLE_SECONDS)
         # Ctrl+L focuses the location field in common KDE/GTK file dialogs.
         ydotool_key("29:1", "38:1", "38:0", "29:0")
-        time.sleep(0.12)
-        ydotool_key("29:1", "47:1", "47:0", "29:0")
+        log_event("dialog-step sent=ctrl+l")
+        time.sleep(0.2)
+        ydotool_key("29:1", "30:1", "30:0", "29:0")
+        log_event("dialog-step sent=ctrl+a")
         time.sleep(0.08)
+        ydotool_key("29:1", "47:1", "47:0", "29:0")
+        log_event("dialog-step sent=ctrl+v")
+        time.sleep(0.2)
         ydotool_key("28:1", "28:0")
+        log_event("dialog-step sent=enter")
     finally:
         if old_clipboard is not None:
-            time.sleep(0.2)
+            time.sleep(CLIPBOARD_RESTORE_DELAY_SECONDS)
             try:
                 set_clipboard(old_clipboard)
+                log_event("dialog-step clipboard-restored")
             except AutomationError:
                 pass
 
