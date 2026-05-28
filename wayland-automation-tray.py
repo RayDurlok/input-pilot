@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import shutil
 import subprocess
 from pathlib import Path
@@ -14,7 +15,7 @@ import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("AppIndicator3", "0.1")
-from gi.repository import AppIndicator3, Gtk  # noqa: E402
+from gi.repository import AppIndicator3, GLib, Gtk  # noqa: E402
 
 
 APP_ID = "wayland-automation"
@@ -302,6 +303,13 @@ def apply_shortcuts(shortcuts: dict[str, str]) -> None:
                 unregister_shortcut(shortcut)
 
 
+def deactivate_shortcuts() -> None:
+    disable_legacy_shortcuts()
+    for modifier in MODIFIER_OPTIONS:
+        for function_key in FUNCTION_KEYS:
+            unregister_shortcut(shortcut_label(modifier, function_key))
+
+
 def check_ydotool(socket: str | None = None) -> str:
     ydotool = shutil.which("ydotool")
     if not ydotool:
@@ -352,6 +360,11 @@ class AutomationTray:
         self.indicator.set_label("WA", "WA")
         self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
         self.indicator.set_menu(self.build_menu())
+        GLib.timeout_add_seconds(1, self.activate_shortcuts)
+
+    def activate_shortcuts(self) -> bool:
+        apply_shortcuts(load_shortcuts())
+        return False
 
     def build_menu(self) -> Gtk.Menu:
         menu = Gtk.Menu()
@@ -398,6 +411,7 @@ class AutomationTray:
         dialog.destroy()
 
     def quit(self, _item: Gtk.MenuItem) -> None:
+        deactivate_shortcuts()
         Gtk.main_quit()
 
 
@@ -529,6 +543,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Apply configured F1-F11 shortcuts and exit.",
     )
+    parser.add_argument(
+        "--deactivate-shortcuts",
+        action="store_true",
+        help="Deactivate configured F1-F11 shortcuts and exit.",
+    )
     return parser.parse_args()
 
 
@@ -536,6 +555,10 @@ def main() -> int:
     args = parse_args()
     if args.apply_shortcuts:
         apply_shortcuts(load_shortcuts())
+        return 0
+
+    if args.deactivate_shortcuts:
+        deactivate_shortcuts()
         return 0
 
     if args.check:
@@ -547,8 +570,17 @@ def main() -> int:
         print(f"ydotool: {check_ydotool(args.ydotool_socket)}")
         return 0
 
+    def stop_tray(_signum=None, _frame=None):
+        deactivate_shortcuts()
+        Gtk.main_quit()
+
+    signal.signal(signal.SIGINT, stop_tray)
+    signal.signal(signal.SIGTERM, stop_tray)
+
+    apply_shortcuts(load_shortcuts())
     AutomationTray(args.template.expanduser(), args.ydotool_socket)
     Gtk.main()
+    deactivate_shortcuts()
     return 0
 
 
