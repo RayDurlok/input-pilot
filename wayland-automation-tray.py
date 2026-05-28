@@ -344,10 +344,12 @@ class AutomationTray:
         self.ydotool_socket = ydotool_socket
         self.indicator = AppIndicator3.Indicator.new(
             APP_ID,
-            "input-mouse",
+            "preferences-desktop-keyboard",
             AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
         )
         self.indicator.set_title("Wayland Automation")
+        self.indicator.set_icon_full("preferences-desktop-keyboard", "Wayland Automation")
+        self.indicator.set_label("WA", "WA")
         self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
         self.indicator.set_menu(self.build_menu())
 

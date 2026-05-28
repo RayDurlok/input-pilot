@@ -29,6 +29,12 @@ Start the tray helper:
 ./wayland-automation-tray.py --ydotool-socket /tmp/ydotool_socket
 ```
 
+Install the tray autostart entry:
+
+```bash
+./install-tray-autostart.sh
+```
+
 ## ydotool
 
 Start an accessible `ydotoold` service for Wayland mouse/keyboard automation:
