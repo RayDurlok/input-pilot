@@ -200,10 +200,11 @@ def active_window_is_file_dialog() -> bool:
     is_file_dialog = bool(data.get("is_file_dialog"))
     caption = str(data.get("caption", ""))
     resource_class = str(data.get("resource_class", ""))
+    window_type = str(data.get("window_type", ""))
     log_event(
         "auto-dialog "
         f"state={'file-dialog' if is_file_dialog else 'normal'} "
-        f"caption={caption!r} class={resource_class!r}"
+        f"caption={caption!r} class={resource_class!r} type={window_type!r}"
     )
     return is_file_dialog
 

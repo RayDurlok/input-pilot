@@ -60,10 +60,32 @@ function activeWindowLooksLikeFileDialog(window, caption, resourceClass, resourc
         "gtkfilechooser",
         "kfilewidget",
         "kfiledialog",
+        "enter name of file to save",
+        "name of file to save",
+        "file to save",
     ];
     for (let i = 0; i < strongMarkers.length; i++) {
         if (haystack.indexOf(strongMarkers[i]) !== -1) {
             return true;
+        }
+    }
+
+    const portalDialog = haystack.indexOf("portal.desktop") !== -1;
+    const portalMarkers = [
+        "file",
+        "folder",
+        "save",
+        "open",
+        "datei",
+        "ordner",
+        "speichern",
+        "öffnen",
+    ];
+    if (portalDialog) {
+        for (let i = 0; i < portalMarkers.length; i++) {
+            if (haystack.indexOf(portalMarkers[i]) !== -1) {
+                return true;
+            }
         }
     }
 
