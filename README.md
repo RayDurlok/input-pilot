@@ -48,7 +48,14 @@ Install the tray autostart entry:
 
 ## ydotool
 
-Start an accessible `ydotoold` service for Wayland mouse/keyboard automation:
+Install and enable a persistent `ydotoold` service for Wayland mouse/keyboard
+automation:
+
+```bash
+./install-ydotool-service.sh
+```
+
+Start an accessible transient `ydotoold` service manually:
 
 ```bash
 ./start-ydotool-automation-service.sh
