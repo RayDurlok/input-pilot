@@ -48,6 +48,9 @@ Install the tray autostart entry:
 
 The `Button-Template klicken` tray action searches the current screen for
 `/home/jakob/Desktop/buttonscreen.png` and double left-clicks the match center.
+It maps the screenshot position to the matched monitor's local coordinates for
+ydotool. `F12` is registered as an emergency stop while the tray is running; it
+aborts a running template click and releases mouse buttons if needed.
 
 ## ydotool
 
