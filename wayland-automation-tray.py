@@ -23,7 +23,7 @@ APP_ID = "wayland-automation"
 SCRIPT_DIR = Path(__file__).resolve().parent
 OPEN_DOWNLOADS = SCRIPT_DIR / "open-downloads.sh"
 CLICK_IMAGE = SCRIPT_DIR / "wayland-click-image.py"
-DEFAULT_TEMPLATE = Path.home() / "Pictures/button-templates/resolve-render.png"
+DEFAULT_TEMPLATE = Path.home() / "Desktop/buttonscreen.png"
 DEFAULT_YDOTOOL_SOCKET = "/tmp/ydotool_socket"
 CONFIG_FILE = Path.home() / ".config/wayland-automation/shortcuts.json"
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
@@ -681,7 +681,7 @@ class AutomationTray:
                 f"Template fehlt: {self.template}",
             )
             return
-        command = [str(CLICK_IMAGE), str(self.template)]
+        command = [str(CLICK_IMAGE), str(self.template), "--double-click"]
         if self.ydotool_socket:
             command.extend(["--ydotool-socket", self.ydotool_socket])
         run_detached(command)

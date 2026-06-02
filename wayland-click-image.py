@@ -42,7 +42,13 @@ def take_screenshot(output: Path) -> None:
     )
 
 
-def click_at(x: int, y: int, socket: str | None) -> None:
+def click_at(
+    x: int,
+    y: int,
+    socket: str | None,
+    repeat: int = 1,
+    next_delay_ms: int = 80,
+) -> None:
     ydotool = require_command(
         "ydotool",
         "sudo dnf install ydotool; then start ydotoold, for example: sudo ydotoold",
@@ -56,7 +62,13 @@ def click_at(x: int, y: int, socket: str | None) -> None:
         check=True,
         env=env,
     )
-    subprocess.run([ydotool, "click", "0xC0"], check=True, env=env)
+    click_command = [ydotool, "click"]
+    if repeat > 1:
+        click_command.extend(
+            ["--repeat", str(repeat), "--next-delay", str(next_delay_ms)]
+        )
+    click_command.append("0xC0")
+    subprocess.run(click_command, check=True, env=env)
 
 
 def parse_args() -> argparse.Namespace:
@@ -80,6 +92,17 @@ def parse_args() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Only print the detected position; do not click",
+    )
+    parser.add_argument(
+        "--double-click",
+        action="store_true",
+        help="Double left-click the detected template center",
+    )
+    parser.add_argument(
+        "--double-click-delay",
+        type=int,
+        default=80,
+        help="Milliseconds between double-click events (default: 80)",
     )
     parser.add_argument(
         "--debug-image",
@@ -141,7 +164,13 @@ def main() -> int:
             )
 
         if not args.dry_run:
-            click_at(center_x, center_y, args.ydotool_socket)
+            click_at(
+                center_x,
+                center_y,
+                args.ydotool_socket,
+                repeat=2 if args.double_click else 1,
+                next_delay_ms=args.double_click_delay,
+            )
 
     return 0
 

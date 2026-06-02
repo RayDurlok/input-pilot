@@ -46,6 +46,9 @@ Install the tray autostart entry:
 ./install-tray-autostart.sh
 ```
 
+The `Button-Template klicken` tray action searches the current screen for
+`/home/jakob/Desktop/buttonscreen.png` and double left-clicks the match center.
+
 ## ydotool
 
 Install and enable a persistent `ydotoold` service for Wayland mouse/keyboard
