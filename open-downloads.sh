@@ -8,4 +8,4 @@ printf '%s open-downloads invoked pid=%s display=%s desktop=%s\n' \
   "$(date --iso-8601=seconds)" "$$" "${DISPLAY:-}" "${XDG_CURRENT_DESKTOP:-}" \
   >> "${log_file}"
 
-xdg-open /home/jakob/Downloads/
+xdg-open "${HOME}/Downloads/"

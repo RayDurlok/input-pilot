@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import shutil
 import subprocess
@@ -19,22 +20,25 @@ gi.require_version("AppIndicator3", "0.1")
 from gi.repository import AppIndicator3, Gio, GLib, Gtk  # noqa: E402
 
 
-APP_ID = "wayland-automation"
+APP_ID = "input-pilot"
+APP_NAME = "Input Pilot"
 SCRIPT_DIR = Path(__file__).resolve().parent
 OPEN_DOWNLOADS = SCRIPT_DIR / "open-downloads.sh"
 CLICK_IMAGE = SCRIPT_DIR / "wayland-click-image.py"
+TEMPLATE_SERVER = SCRIPT_DIR / "input-pilot-template-server.py"
 ABORT_CLICK = SCRIPT_DIR / "abort-click-template.sh"
 DEFAULT_TEMPLATE = Path.home() / "Desktop/buttonscreen.png"
 DEFAULT_YDOTOOL_SOCKET = "/tmp/ydotool_socket"
 CONFIG_FILE = Path.home() / ".config/wayland-automation/shortcuts.json"
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
 ACTIVE_WINDOW_FILE = STATE_DIR / "wayland-automation/active-window.json"
+CURSOR_POSITION_FILE = STATE_DIR / "wayland-automation/cursor-position.json"
 OPEN_CONFIGURED_TARGET = SCRIPT_DIR / "open-configured-target.py"
 KWIN_ACTIVE_WINDOW_SCRIPT = SCRIPT_DIR / "kwin-active-window-state.js"
 KWIN_ACTIVE_WINDOW_SCRIPT_NAME = "wayland-automation-active-window-state"
-DBUS_NAME = "at.jackandjake.WaylandAutomation"
-DBUS_OBJECT = "/at/jackandjake/WaylandAutomation"
-DBUS_INTERFACE = "at.jackandjake.WaylandAutomation"
+DBUS_NAME = "io.inputpilot.Automation"
+DBUS_OBJECT = "/io/inputpilot/Automation"
+DBUS_INTERFACE = "io.inputpilot.Automation"
 FUNCTION_KEYS = [f"F{number}" for number in range(1, 12)]
 EMERGENCY_KEY = "F12"
 MODIFIER_OPTIONS = ["", "Alt", "Ctrl", "Meta", "Shift", "Ctrl+Alt", "Meta+Alt"]
@@ -131,6 +135,19 @@ def clear_active_window_state() -> None:
     write_active_window_state(False, "", "", "", "", "")
 
 
+def write_cursor_position(x: int, y: int) -> None:
+    CURSOR_POSITION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "timestamp": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+        "x": x,
+        "y": y,
+        "pid": os.getpid(),
+    }
+    with CURSOR_POSITION_FILE.open("w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
 class AutomationDBusService:
     introspection = Gio.DBusNodeInfo.new_for_xml(
         f"""
@@ -143,6 +160,10 @@ class AutomationDBusService:
               <arg type="s" name="resource_name" direction="in"/>
               <arg type="s" name="window_role" direction="in"/>
               <arg type="s" name="window_type" direction="in"/>
+            </method>
+            <method name="SetCursorPosition">
+              <arg type="i" name="x" direction="in"/>
+              <arg type="i" name="y" direction="in"/>
             </method>
           </interface>
         </node>
@@ -185,6 +206,11 @@ class AutomationDBusService:
             write_active_window_state(*parameters.unpack())
             invocation.return_value(None)
             return
+        if method_name == "SetCursorPosition":
+            x, y = parameters.unpack()
+            write_cursor_position(x, y)
+            invocation.return_value(None)
+            return
         invocation.return_dbus_error(
             f"{DBUS_INTERFACE}.Error.UnknownMethod",
             f"Unknown method: {method_name}",
@@ -201,7 +227,7 @@ class AutomationDBusService:
 
 def load_shortcuts() -> dict[str, str]:
     if not CONFIG_FILE.exists():
-        return {"F1": "/home/jakob/Downloads/"}
+        return {"F1": str(Path.home() / "Downloads")}
     try:
         with CONFIG_FILE.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
@@ -258,7 +284,7 @@ def write_desktop_file(shortcut: str, target: str) -> str:
                 "[Desktop Entry]",
                 "Type=Application",
                 f"Name=Open configured target {shortcut}",
-                f"Comment=Open configured Wayland Automation target for {shortcut}",
+                f"Comment=Open configured Input Pilot target for {shortcut}",
                 f"Exec={OPEN_CONFIGURED_TARGET} --auto {shortcut}",
                 "Icon=system-run",
                 "Terminal=false",
@@ -285,7 +311,7 @@ def write_dialog_desktop_file(function_key: str, target: str) -> str:
                 "[Desktop Entry]",
                 "Type=Application",
                 f"Name=Use configured folder {function_key} in dialog",
-                f"Comment=Use configured Wayland Automation folder for {function_key} in a file dialog",
+                f"Comment=Use configured Input Pilot folder for {function_key} in a file dialog",
                 f"Exec={OPEN_CONFIGURED_TARGET} --dialog {function_key}",
                 "Icon=folder-open",
                 "Terminal=false",
@@ -311,8 +337,8 @@ def write_emergency_desktop_file() -> str:
             [
                 "[Desktop Entry]",
                 "Type=Application",
-                "Name=Abort Wayland Automation template click",
-                "Comment=Emergency stop for Wayland Automation template clicking",
+                "Name=Abort Input Pilot template click",
+                "Comment=Emergency stop for Input Pilot template clicking",
                 f"Exec={ABORT_CLICK}",
                 "Icon=process-stop",
                 "Terminal=false",
@@ -347,6 +373,82 @@ def kwin_scripting_call(*args: str) -> None:
             *args,
         ]
     )
+
+
+def busctl_text(command: list[str]) -> str:
+    if not shutil.which("busctl"):
+        return ""
+    result = subprocess.run(
+        command,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout
+
+
+def configure_ydotool_input_device() -> bool:
+    tree = busctl_text(["busctl", "--user", "tree", "org.kde.KWin"])
+    paths = sorted(set(re.findall(r"/org/kde/KWin/InputDevice/\S+", tree)))
+    configured = False
+    for path in paths:
+        name_output = busctl_text(
+            [
+                "busctl",
+                "--user",
+                "get-property",
+                "org.kde.KWin",
+                path,
+                "org.kde.KWin.InputDevice",
+                "name",
+            ]
+        )
+        if "ydotoold virtual device" not in name_output:
+            continue
+        run_checked(
+            [
+                "busctl",
+                "--user",
+                "set-property",
+                "org.kde.KWin",
+                path,
+                "org.kde.KWin.InputDevice",
+                "pointerAccelerationProfileFlat",
+                "b",
+                "true",
+            ]
+        )
+        run_checked(
+            [
+                "busctl",
+                "--user",
+                "set-property",
+                "org.kde.KWin",
+                path,
+                "org.kde.KWin.InputDevice",
+                "pointerAccelerationProfileAdaptive",
+                "b",
+                "false",
+            ]
+        )
+        run_checked(
+            [
+                "busctl",
+                "--user",
+                "set-property",
+                "org.kde.KWin",
+                path,
+                "org.kde.KWin.InputDevice",
+                "pointerAcceleration",
+                "d",
+                "0",
+            ]
+        )
+        configured = True
+    return configured
 
 
 def load_kwin_active_window_script() -> None:
@@ -499,7 +601,7 @@ def register_dialog_shortcut(function_key: str, target: str) -> None:
 
 def register_emergency_shortcut() -> None:
     desktop_id = write_emergency_desktop_file()
-    name = "Abort Wayland Automation template click"
+    name = "Abort Input Pilot template click"
     codes = key_codes_for("", EMERGENCY_KEY)
 
     if shutil.which("kbuildsycoca6"):
@@ -775,13 +877,15 @@ class AutomationTray:
             "preferences-desktop-keyboard",
             AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
         )
-        self.indicator.set_title("Wayland Automation")
-        self.indicator.set_icon_full("preferences-desktop-keyboard", "Wayland Automation")
-        self.indicator.set_label("WA", "WA")
+        self.indicator.set_title(APP_NAME)
+        self.indicator.set_icon_full("preferences-desktop-keyboard", APP_NAME)
+        self.indicator.set_label("IP", "IP")
         self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
         self.indicator.set_menu(self.build_menu())
         GLib.timeout_add_seconds(1, self.activate_shortcuts)
         GLib.timeout_add_seconds(1, self.activate_window_detection)
+        GLib.timeout_add_seconds(1, self.activate_ydotool_device_tuning)
+        GLib.timeout_add_seconds(1, self.warm_template_server)
 
     def activate_shortcuts(self) -> bool:
         apply_shortcuts(load_shortcuts())
@@ -789,6 +893,15 @@ class AutomationTray:
 
     def activate_window_detection(self) -> bool:
         load_kwin_active_window_script()
+        return False
+
+    def activate_ydotool_device_tuning(self) -> bool:
+        configure_ydotool_input_device()
+        return False
+
+    def warm_template_server(self) -> bool:
+        if TEMPLATE_SERVER.exists():
+            run_detached([str(TEMPLATE_SERVER), "--warmup"])
         return False
 
     def build_menu(self) -> Gtk.Menu:
@@ -813,17 +926,17 @@ class AutomationTray:
     def click_template(self, _item: Gtk.MenuItem) -> None:
         if not self.template.exists():
             notify(
-                "Wayland Automation",
+                APP_NAME,
                 f"Template fehlt: {self.template}",
             )
             return
-        command = [str(CLICK_IMAGE), str(self.template), "--double-click"]
+        command = [str(TEMPLATE_SERVER), str(self.template), "--double-click"]
         if self.ydotool_socket:
             command.extend(["--ydotool-socket", self.ydotool_socket])
         run_detached(command)
 
     def show_ydotool_status(self, _item: Gtk.MenuItem) -> None:
-        notify("Wayland Automation", check_ydotool(self.ydotool_socket))
+        notify(APP_NAME, check_ydotool(self.ydotool_socket))
 
     def show_configuration(self, _item: Gtk.MenuItem) -> None:
         dialog = ShortcutConfigDialog(load_shortcuts())
@@ -832,12 +945,14 @@ class AutomationTray:
             shortcuts = dialog.shortcuts()
             save_shortcuts(shortcuts)
             apply_shortcuts(shortcuts)
-            notify("Wayland Automation", "Shortcuts gespeichert.")
+            notify(APP_NAME, "Shortcuts gespeichert.")
         dialog.destroy()
 
     def quit(self, _item: Gtk.MenuItem) -> None:
         deactivate_shortcuts()
         unload_kwin_active_window_script()
+        if TEMPLATE_SERVER.exists():
+            run_detached([str(TEMPLATE_SERVER), "--stop"])
         self.dbus_service.shutdown()
         Gtk.main_quit()
 

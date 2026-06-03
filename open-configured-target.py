@@ -84,7 +84,7 @@ def log_event(message: str) -> None:
 def notify(message: str) -> None:
     if shutil.which("notify-send"):
         subprocess.Popen(
-            ["notify-send", "Wayland Automation", message],
+            ["notify-send", "Input Pilot", message],
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

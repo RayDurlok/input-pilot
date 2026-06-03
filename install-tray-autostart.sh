@@ -3,20 +3,29 @@ set -euo pipefail
 
 app_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 desktop_path="${HOME}/.config/autostart/wayland-automation-tray.desktop"
+launcher_path="${HOME}/.local/share/applications/input-pilot-tray.desktop"
 
-mkdir -p "${HOME}/.config/autostart"
+mkdir -p "${HOME}/.config/autostart" "${HOME}/.local/share/applications"
 
-cat > "${desktop_path}" <<DESKTOP
+desktop_entry() {
+  cat <<DESKTOP
 [Desktop Entry]
 Type=Application
-Name=Wayland Automation Tray
-Comment=Start Wayland Automation tray helper
+Name=Input Pilot Tray
+Comment=Start Input Pilot tray helper
 Exec=/usr/bin/python3 ${app_dir}/wayland-automation-tray.py --ydotool-socket /tmp/ydotool_socket
 Icon=input-keyboard
 Terminal=false
 X-GNOME-Autostart-enabled=true
 StartupNotify=false
+X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2
 DESKTOP
+}
+
+desktop_entry > "${desktop_path}"
+desktop_entry > "${launcher_path}"
 
 chmod 0644 "${desktop_path}"
+chmod 0644 "${launcher_path}"
 echo "Installed ${desktop_path}"
+echo "Installed ${launcher_path}"

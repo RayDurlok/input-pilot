@@ -1,6 +1,6 @@
-const DBUS_SERVICE = "at.jackandjake.WaylandAutomation";
-const DBUS_PATH = "/at/jackandjake/WaylandAutomation";
-const DBUS_INTERFACE = "at.jackandjake.WaylandAutomation";
+const DBUS_SERVICE = "io.inputpilot.Automation";
+const DBUS_PATH = "/io/inputpilot/Automation";
+const DBUS_INTERFACE = "io.inputpilot.Automation";
 
 function textProperty(window, propertyName) {
     try {

@@ -72,7 +72,7 @@ System Settings -> Keyboard -> Shortcuts -> Add Command
 Command example:
 
 ```bash
-/usr/bin/python3 /home/jakob/Apps/WaylandAutomation/wayland-click-image.py /home/jakob/Pictures/button-templates/resolve-render.png
+./wayland-click-image.py ~/Pictures/button-templates/resolve-render.png
 ```
 
 Then assign `F1` or a safer combo like `Meta+F1`.

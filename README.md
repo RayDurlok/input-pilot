@@ -1,4 +1,4 @@
-# Wayland Automation
+# Input Pilot
 
 Small KDE Wayland automation helpers for global shortcuts, tray actions, and
 screen-template clicking.
@@ -14,8 +14,8 @@ Install or refresh the configured shortcuts:
 
 Current mappings:
 
-- `F1` / `Help`: open `/home/jakob/Downloads/`
-- `Alt+F7`: open `https://nextcloud.jackandjake.at/apps/files/files`
+- `F1` / `Help`: open `~/Downloads/`
+- `Alt+F7`: open the configured browser link
 
 The tray menu contains a configuration assistant where `F1` through `F11` can
 be mapped to either local paths or links. It also supports modifier variants
@@ -26,7 +26,7 @@ Configured shortcuts are active while the tray helper is running. Choosing
 their normal application behavior.
 
 When a plain function key target is a local folder, the normal key becomes
-context-aware while the tray is running: `F1` opens `/home/jakob/Downloads/`
+context-aware while the tray is running: `F1` opens `~/Downloads/`
 normally, but if KWin reports that a common Save/Open dialog is focused, `F1`
 pastes the folder path into that dialog and opens it there. `Shift+F1` remains
 available as an explicit file-dialog helper. This helper needs `ydotoold` on
@@ -47,10 +47,13 @@ Install the tray autostart entry:
 ```
 
 The `Button-Template klicken` tray action searches the current screen for
-`/home/jakob/Desktop/buttonscreen.png` and double left-clicks the match center.
-It maps the screenshot position to the matched monitor's local coordinates for
-ydotool. `F12` is registered as an emergency stop while the tray is running; it
-aborts a running template click and releases mouse buttons if needed.
+`~/Desktop/buttonscreen.png` and double left-clicks the match center.
+The tray warms a small local template server so OpenCV stays loaded between
+clicks; this reduces the delay before the mouse starts moving.
+For normal clicks, KWin reports the real cursor position once, then ydotool
+moves relatively to the detected target and clicks immediately.
+`F12` is registered as an emergency stop while the tray is running; it aborts a
+running template click and releases mouse buttons if needed.
 
 ## ydotool
 

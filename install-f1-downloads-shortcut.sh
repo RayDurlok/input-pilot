@@ -14,7 +14,7 @@ cat > "${desktop_path}" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=Open Downloads
-Comment=Open /home/jakob/Downloads/
+Comment=Open the current user's Downloads folder
 Exec=${app_dir}/open-downloads.sh
 Icon=folder-download
 Terminal=false
