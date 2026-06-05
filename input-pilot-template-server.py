@@ -105,6 +105,9 @@ def request_args_from_payload(payload: dict) -> Namespace:
         move_only=bool(payload.get("move_only", False)),
         double_click=bool(payload.get("double_click", False)),
         double_click_delay=int(payload.get("double_click_delay", 35)),
+        button=payload.get("button", "left"),
+        no_return_cursor=bool(payload.get("no_return_cursor", False)),
+        hold=float(payload.get("hold", 0.0)),
         debug_image=payload.get("debug_image"),
         ydotool_socket=payload.get("ydotool_socket"),
         coordinate_mode=payload.get("coordinate_mode", "global"),
@@ -185,6 +188,12 @@ def fallback_click(args: argparse.Namespace) -> int:
         command.append("--move-only")
     if args.double_click:
         command.append("--double-click")
+    if args.button:
+        command.extend(["--button", args.button])
+    if args.no_return_cursor:
+        command.append("--no-return-cursor")
+    if args.hold:
+        command.extend(["--hold", str(args.hold)])
     command.extend(["--double-click-delay", str(args.double_click_delay)])
     if args.ydotool_socket:
         command.extend(["--ydotool-socket", args.ydotool_socket])
@@ -212,6 +221,9 @@ def client(args: argparse.Namespace) -> int:
         "move_only": args.move_only,
         "double_click": args.double_click,
         "double_click_delay": args.double_click_delay,
+        "button": args.button,
+        "no_return_cursor": args.no_return_cursor,
+        "hold": args.hold,
         "ydotool_socket": args.ydotool_socket,
         "coordinate_mode": args.coordinate_mode,
         "screen_scope": args.screen_scope,
@@ -245,6 +257,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--move-only", action="store_true")
     parser.add_argument("--double-click", action="store_true")
     parser.add_argument("--double-click-delay", type=int, default=35)
+    parser.add_argument("--button", choices=("left", "right"), default="left")
+    parser.add_argument("--no-return-cursor", action="store_true")
+    parser.add_argument("--hold", type=float, default=0.0)
     parser.add_argument("--ydotool-socket")
     parser.add_argument("--coordinate-mode", choices=("output-local", "global"), default="global")
     parser.add_argument("--screen-scope", choices=("primary", "all"), default="primary")

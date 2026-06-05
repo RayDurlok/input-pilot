@@ -55,6 +55,49 @@ moves relatively to the detected target and clicks immediately.
 `F12` is registered as an emergency stop while the tray is running; it aborts a
 running template click and releases mouse buttons if needed.
 
+## Mousemove Config
+
+The tray menu contains a `Mousemove Config...` editor for named template-click
+automations. Each automation can have its own trigger hotkey. Hotkeys support
+modifiers plus function keys, letters, numbers, and common navigation keys.
+
+Each node uses a screenshot/template image, an optional target template, a mouse
+option (`Left click`, `Right click`, `Double left click`, `Hover`,
+`Drag to template`, `Drag to mouse position`, `Mouse position`,
+`Previous mouse position`, or `Input string`), and an optional wait time.
+`Key combo` nodes can send shortcuts such as `Ctrl+S` without a
+screenshot/template. During a chain the pointer can continue from step to step;
+after the automation finishes, it returns to the original position. Nodes can
+be reordered by dragging the handle on the left side of each row; row numbers
+update automatically.
+
+Mousemove automations are stored in:
+
+```text
+~/.config/wayland-automation/mousemove-sequence.json
+```
+
+For `Hover`, the wait time is used as the hover duration before the next node.
+For `Drag to template`, the first template is the drag source and the target
+template is where the mouse button is released.
+The target template field is only shown for drag nodes. Enabling `Debug` on an
+automation shows desktop notifications for helpful failures such as missing
+source or target screenshots.
+
+## Folder Templates
+
+The tray menu contains a `Folder Templates...` editor. Each entry has a name,
+a trigger hotkey, and a template folder path. When the hotkey is pressed while
+Dolphin is active, Input Pilot copies that template folder into the current
+Dolphin directory and asks for the new folder name.
+
+The default user configuration maps `Ctrl+N` to the first folder template.
+Folder templates are stored in:
+
+```text
+~/.config/wayland-automation/folder-templates.json
+```
+
 ## ydotool
 
 Install and enable a persistent `ydotoold` service for Wayland mouse/keyboard
@@ -83,3 +126,36 @@ Logs are written below:
 ```text
 ~/.local/state/wayland-automation/
 ```
+
+## Text Replacement
+
+The tray menu contains a `Textreplacement...` editor. Entries are stored as an
+array in:
+
+```text
+~/.config/wayland-automation/text-replacements.json
+```
+
+Example:
+
+```json
+[
+  {
+    "trigger": "ct.",
+    "replacement": "ChatGPT",
+    "enabled": true
+  }
+]
+```
+
+Typing `ct.` followed by space replaces it with `ChatGPT `. On Wayland this
+requires low-level read access to keyboard events in `/dev/input`.
+
+Built-in dynamic replacements:
+
+- `dt.` + space: current date as `dd.mm.yyyy`
+- `dt_` + space: current date as `yyyy_mm_dd`
+- `rnr.` + space: current date as `yyyymmdd`
+
+Internally, `dt-` and `dt/` are accepted as aliases for `dt_` to handle
+keyboard layouts that report the underscore key as shifted punctuation.

@@ -298,8 +298,9 @@ def move_cursor_to(
     tolerance: int = 8,
     max_iterations: int = 2,
     verify: bool = True,
+    initial_position: CursorPosition | None = None,
 ) -> CursorPosition:
-    position = read_cursor_position()
+    position = initial_position or read_cursor_position()
     for _iteration in range(max_iterations):
         ensure_not_aborted()
         dx = target_x - position.x
@@ -466,27 +467,66 @@ def click_at(
     socket: str | None,
     repeat: int = 1,
     next_delay_ms: int = 35,
+    button_code: str = "0xC0",
+    return_cursor: bool = True,
+    hold_seconds: float = 0.0,
 ) -> CursorPosition:
+    original_position = read_cursor_position()
     if repeat <= 0:
         ensure_not_aborted()
-        final_position = move_cursor_to(x, y, socket, verify=True)
+        final_position = move_cursor_to(
+            x,
+            y,
+            socket,
+            verify=True,
+            initial_position=original_position,
+        )
+        if hold_seconds > 0:
+            run_ydotool(["mousemove", "--", "1", "0"], socket)
+            run_ydotool(["mousemove", "--", "-1", "0"], socket)
+            time.sleep(hold_seconds)
+        if return_cursor:
+            move_cursor_to(
+                original_position.x,
+                original_position.y,
+                socket,
+                verify=False,
+                initial_position=final_position,
+            )
         return final_position
 
-    final_position = move_cursor_to(x, y, socket, verify=False)
-
-    ensure_not_aborted()
-    if repeat == 1:
-        run_ydotool(["click", "0xC0"], socket)
-    else:
-        run_ydotool(
-            [
-                "click",
-                f"--repeat={repeat}",
-                f"--next-delay={max(next_delay_ms, 0)}",
-                "0xC0",
-            ],
+    final_position = original_position
+    try:
+        final_position = move_cursor_to(
+            x,
+            y,
             socket,
+            verify=False,
+            initial_position=original_position,
         )
+
+        ensure_not_aborted()
+        if repeat == 1:
+            run_ydotool(["click", button_code], socket)
+        else:
+            run_ydotool(
+                [
+                    "click",
+                    f"--repeat={repeat}",
+                    f"--next-delay={max(next_delay_ms, 0)}",
+                    button_code,
+                ],
+                socket,
+            )
+    finally:
+        if return_cursor:
+            move_cursor_to(
+                original_position.x,
+                original_position.y,
+                socket,
+                verify=False,
+                initial_position=final_position,
+            )
     return final_position
 
 
@@ -527,6 +567,23 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=35,
         help="Milliseconds between double-click input events (default: 35)",
+    )
+    parser.add_argument(
+        "--button",
+        choices=("left", "right"),
+        default="left",
+        help="Mouse button to click (default: left).",
+    )
+    parser.add_argument(
+        "--no-return-cursor",
+        action="store_true",
+        help="Leave the pointer at the clicked template instead of returning it.",
+    )
+    parser.add_argument(
+        "--hold",
+        type=float,
+        default=0.0,
+        help="Seconds to hold the pointer at the target before returning.",
     )
     parser.add_argument(
         "--debug-image",
@@ -676,6 +733,8 @@ def run_template_action(args: argparse.Namespace, cv2=None) -> TemplateActionRes
                 args.ydotool_socket,
                 repeat=0,
                 next_delay_ms=args.double_click_delay,
+                return_cursor=not args.no_return_cursor,
+                hold_seconds=max(args.hold, 0.0),
             )
         elif not args.dry_run:
             cursor_position = click_at(
@@ -684,6 +743,8 @@ def run_template_action(args: argparse.Namespace, cv2=None) -> TemplateActionRes
                 args.ydotool_socket,
                 repeat=2 if args.double_click else 1,
                 next_delay_ms=args.double_click_delay,
+                button_code="0xC1" if args.button == "right" else "0xC0",
+                return_cursor=not args.no_return_cursor,
             )
 
         return TemplateActionResult(

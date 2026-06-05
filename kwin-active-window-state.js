@@ -19,6 +19,15 @@ function boolProperty(window, propertyName) {
     }
 }
 
+function intProperty(window, propertyName) {
+    try {
+        const value = window ? Number(window[propertyName]) : 0;
+        return Number.isFinite(value) ? Math.trunc(value) : 0;
+    } catch (error) {
+        return 0;
+    }
+}
+
 function typeText(window) {
     const flags = [];
     if (boolProperty(window, "dialog")) {
@@ -131,6 +140,7 @@ function reportActiveWindow() {
     const resourceName = textProperty(window, "resourceName");
     const role = textProperty(window, "windowRole");
     const windowType = typeText(window);
+    const windowPid = intProperty(window, "pid");
     const isFileDialog = activeWindowLooksLikeFileDialog(
         window,
         caption,
@@ -149,7 +159,8 @@ function reportActiveWindow() {
         resourceClass,
         resourceName,
         role,
-        windowType
+        windowType,
+        windowPid
     );
 }
 
