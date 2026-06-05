@@ -55,21 +55,20 @@ moves relatively to the detected target and clicks immediately.
 `F12` is registered as an emergency stop while the tray is running; it aborts a
 running template click and releases mouse buttons if needed.
 
-## Mousemove Config
+## Input Automations
 
-The tray menu contains a `Mousemove Config...` editor for named template-click
+The tray menu contains an `Input Automations...` editor for named input
 automations. Each automation can have its own trigger hotkey. Hotkeys support
 modifiers plus function keys, letters, numbers, and common navigation keys.
 
-Each node uses a screenshot/template image, an optional target template, a mouse
-option (`Left click`, `Right click`, `Double left click`, `Hover`,
-`Drag to template`, `Drag to mouse position`, `Mouse position`,
-`Previous mouse position`, or `Input string`), and an optional wait time.
-`Key combo` nodes can send shortcuts such as `Ctrl+S` without a
-screenshot/template. During a chain the pointer can continue from step to step;
-after the automation finishes, it returns to the original position. Nodes can
-be reordered by dragging the handle on the left side of each row; row numbers
-update automatically.
+Each node has an action (`Click`, `Drag`, `Move mouse`, or `Input`) plus the
+source/target fields needed for that action. Sources and targets can be
+screenshot templates, fixed X/Y coordinates, or the previous mouse position
+captured when the automation started. Input nodes can send key combos such as
+`Ctrl+S` or type text strings. During a chain the pointer can continue from
+step to step; after the automation finishes, it returns to the original
+position. Nodes can be reordered by dragging the handle on the left side of
+each row; row numbers update automatically.
 
 Mousemove automations are stored in:
 
@@ -78,11 +77,11 @@ Mousemove automations are stored in:
 ```
 
 For `Hover`, the wait time is used as the hover duration before the next node.
-For `Drag to template`, the first template is the drag source and the target
-template is where the mouse button is released.
-The target template field is only shown for drag nodes. Enabling `Debug` on an
-automation shows desktop notifications for helpful failures such as missing
-source or target screenshots.
+For `Drag`, the source field is where the mouse button is pressed and the
+target field is where it is released. Drag nodes also expose `Steps`, which
+controls how many interpolated mouse movements are used between source and
+target. Enabling `Debug` on an automation shows desktop notifications for
+helpful failures such as missing source or target screenshots.
 
 ## Folder Templates
 

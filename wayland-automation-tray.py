@@ -448,6 +448,11 @@ def clean_mouse_steps(data: object) -> list[dict[str, object]]:
             continue
         template = str(item.get("template", "")).strip()
         click = str(item.get("click", "left")).strip()
+        action = str(item.get("action", "")).strip().lower()
+        button = str(item.get("button", "")).strip().lower()
+        source_type = str(item.get("source_type", "")).strip().lower()
+        target_type = str(item.get("target_type", "")).strip().lower()
+        input_type = str(item.get("input_type", "")).strip().lower()
         keys = str(item.get("keys", "")).strip()
         text = str(item.get("text", ""))
         try:
@@ -457,9 +462,62 @@ def clean_mouse_steps(data: object) -> list[dict[str, object]]:
             x = 0
             y = 0
         try:
+            source_x = int(float(item.get("source_x", 0) or 0))
+            source_y = int(float(item.get("source_y", 0) or 0))
+        except (TypeError, ValueError):
+            source_x = 0
+            source_y = 0
+        try:
             wait = float(item.get("wait", 0.0) or 0.0)
         except (TypeError, ValueError):
             wait = 0.0
+        try:
+            drag_steps = int(float(item.get("drag_steps", 2) or 2))
+        except (TypeError, ValueError):
+            drag_steps = 2
+        if not action:
+            if click in {"left", "right", "double-left", "hover"}:
+                action = "click"
+                button = click
+                target_type = "template"
+            elif click == "drag":
+                action = "drag"
+                source_type = "template"
+                target_type = "template"
+            elif click == "drag-position":
+                action = "drag"
+                source_type = "template"
+                target_type = "position"
+            elif click == "position":
+                action = "move"
+                target_type = "position"
+            elif click == "previous-position":
+                action = "move"
+                target_type = "previous-position"
+            elif click == "keys":
+                action = "input"
+                input_type = "keys"
+            elif click == "text":
+                action = "input"
+                input_type = "text"
+        if action not in {"click", "drag", "move", "input"}:
+            action = "click"
+        if button not in {"left", "right", "double-left", "hover"}:
+            button = "left"
+        if source_type not in {"template", "position", "previous-position"}:
+            source_type = "template"
+        if target_type not in {"template", "position", "previous-position"}:
+            target_type = "template" if action in {"click", "drag"} else "position"
+        if input_type not in {"keys", "text"}:
+            input_type = "keys"
+        if action == "click":
+            click = button
+        elif action == "drag":
+            click = "drag-position" if target_type == "position" else "drag"
+        elif action == "move":
+            click = "previous-position" if target_type == "previous-position" else "position"
+        elif action == "input":
+            click = input_type
         valid_clicks = {
             "left",
             "right",
@@ -472,22 +530,49 @@ def clean_mouse_steps(data: object) -> list[dict[str, object]]:
             "previous-position",
             "text",
         }
+        has_step = False
+        if action == "input":
+            has_step = bool(keys) if input_type == "keys" else bool(text)
+        elif action == "move":
+            has_step = (
+                (target_type == "template" and (str(item.get("target", "")).strip() or template))
+                or target_type in {"position", "previous-position"}
+            )
+        elif action == "drag":
+            has_source = (
+                (source_type == "template" and template)
+                or source_type in {"position", "previous-position"}
+            )
+            has_target = (
+                (target_type == "template" and str(item.get("target", "")).strip())
+                or target_type in {"position", "previous-position"}
+            )
+            has_step = has_source and has_target
+        elif action == "click":
+            has_step = (
+                (target_type == "template" and template)
+                or target_type in {"position", "previous-position"}
+            )
         if (
-            template
-            or (click == "keys" and keys)
-            or (click == "text" and text)
-            or click in {"position", "previous-position"}
-            or (click == "drag-position" and template)
+            has_step
         ):
             steps.append(
                 {
                     "template": template,
                     "click": click if click in valid_clicks else "left",
                     "target": str(item.get("target", "")).strip(),
+                    "action": action,
+                    "button": button,
+                    "source_type": source_type,
+                    "target_type": target_type,
+                    "input_type": input_type,
                     "keys": keys,
                     "text": text,
+                    "source_x": max(source_x, 0),
+                    "source_y": max(source_y, 0),
                     "x": max(x, 0),
                     "y": max(y, 0),
+                    "drag_steps": max(1, min(drag_steps, 200)),
                     "wait": max(wait, 0.0),
                 }
             )
@@ -1474,6 +1559,8 @@ def apply_shortcuts(shortcuts: dict[str, str]) -> None:
     disable_legacy_shortcuts()
     register_emergency_shortcut()
     unregister_mouse_sequence_shortcuts()
+    mouse_automations = load_mouse_config().get("automations", [])
+    register_mouse_sequence_shortcuts(mouse_automations if isinstance(mouse_automations, list) else [])
     register_folder_template_shortcuts(load_folder_templates())
     configured = set(shortcuts)
     for modifier in MODIFIER_OPTIONS:
@@ -1673,7 +1760,7 @@ class AutomationTray:
                 break
             automations = dialog.automations()
             save_mouse_config(automations)
-            unregister_mouse_sequence_shortcuts()
+            register_mouse_sequence_shortcuts(automations)
             notify(
                 APP_NAME,
                 f"{len(automations)} Input-Automationen gespeichert. Trigger laufen über Input Pilot.",
@@ -1751,10 +1838,36 @@ class MousemoveConfigDialog(Gtk.Dialog):
         ("position", "Mouse position"),
         ("previous-position", "Previous mouse position"),
     ]
+    ACTION_OPTIONS = [
+        ("click", "Click"),
+        ("drag", "Drag"),
+        ("move", "Move mouse"),
+        ("input", "Input"),
+    ]
+    BUTTON_OPTIONS = [
+        ("left", "Left click"),
+        ("right", "Right click"),
+        ("double-left", "Double left click"),
+        ("hover", "Hover"),
+    ]
+    SOURCE_OPTIONS = [
+        ("template", "Screenshot"),
+        ("position", "X/Y position"),
+        ("previous-position", "Previous mouse position"),
+    ]
+    TARGET_OPTIONS = [
+        ("template", "Screenshot"),
+        ("position", "X/Y position"),
+        ("previous-position", "Previous mouse position"),
+    ]
+    INPUT_OPTIONS = [
+        ("keys", "Key combo"),
+        ("text", "Input string"),
+    ]
 
     def __init__(self, automations: list[dict[str, object]]) -> None:
         super().__init__(title="Input Automations")
-        self.set_default_size(980, 540)
+        self.set_default_size(1320, 620)
         self.set_border_width(10)
         self.install_css()
         self.automation_state = self.normalize_automations(automations)
@@ -1765,9 +1878,9 @@ class MousemoveConfigDialog(Gtk.Dialog):
         self.selected_row: dict[str, Gtk.Widget] | None = None
         self.drag_source_index: int | None = None
         self.drop_index: int | None = None
-        self.add_button("Abbrechen", Gtk.ResponseType.CANCEL)
-        self.add_button("Ausführen", Gtk.ResponseType.APPLY)
-        self.add_button("Speichern", Gtk.ResponseType.OK)
+        action_area = self.get_action_area()
+        action_area.set_no_show_all(True)
+        action_area.hide()
 
         content = self.get_content_area()
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -1816,6 +1929,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
         trigger_row.pack_start(self.key_combo, False, False, 0)
 
         scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scroller.set_hexpand(True)
         scroller.set_vexpand(True)
         outer.pack_start(scroller, True, True, 0)
@@ -1840,33 +1954,43 @@ class MousemoveConfigDialog(Gtk.Dialog):
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         for label, width in (
             ("", 63),
-            ("Screenshot Template", 330),
-            ("Target Template", 300),
             ("Action", 170),
+            ("Details", 720),
             ("Wait/Sleep", 120),
+            ("", 36),
         ):
             header_label = Gtk.Label(label=label)
             header_label.set_xalign(0)
             header_label.set_size_request(width, -1)
-            header.pack_start(header_label, False, False, 0)
+            header.pack_start(header_label, label == "Details", label == "Details", 0)
         self.rows_box.pack_start(header, False, False, 0)
         self.rows_box.pack_start(self.drop_indicator, False, False, 0)
         self.drop_indicator.hide()
 
-        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        outer.pack_start(buttons, False, False, 0)
+        footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        outer.pack_start(footer, False, False, 0)
 
         self.debug_check = Gtk.CheckButton(label="Debug")
         self.debug_check.set_tooltip_text("Show helpful notifications while running this automation")
-        buttons.pack_start(self.debug_check, False, False, 0)
+        footer.pack_start(self.debug_check, False, False, 0)
+
+        footer.pack_start(Gtk.Box(), True, True, 0)
+
+        cancel_button = Gtk.Button(label="Abbrechen")
+        cancel_button.connect("clicked", lambda _button: self.response(Gtk.ResponseType.CANCEL))
+        footer.pack_start(cancel_button, False, False, 0)
+
+        run_button = Gtk.Button(label="Ausführen")
+        run_button.connect("clicked", lambda _button: self.response(Gtk.ResponseType.APPLY))
+        footer.pack_start(run_button, False, False, 0)
+
+        save_button = Gtk.Button(label="Speichern")
+        save_button.connect("clicked", lambda _button: self.response(Gtk.ResponseType.OK))
+        footer.pack_start(save_button, False, False, 0)
 
         add_button = Gtk.Button(label="Node hinzufügen")
         add_button.connect("clicked", self.add_row)
-        buttons.pack_start(add_button, False, False, 0)
-
-        remove_button = Gtk.Button(label="Entfernen")
-        remove_button.connect("clicked", self.remove_selected_row)
-        buttons.pack_start(remove_button, False, False, 0)
+        footer.pack_start(add_button, False, False, 0)
 
         self.refresh_automation_combo(0)
         self.load_automation(0)
@@ -1974,6 +2098,14 @@ class MousemoveConfigDialog(Gtk.Dialog):
                         int(float(step.get("x", 0) or 0)),
                         int(float(step.get("y", 0) or 0)),
                         float(step.get("wait", 0.0) or 0.0),
+                        str(step.get("action", "")),
+                        str(step.get("button", "")),
+                        str(step.get("source_type", "")),
+                        str(step.get("target_type", "")),
+                        str(step.get("input_type", "")),
+                        int(float(step.get("source_x", 0) or 0)),
+                        int(float(step.get("source_y", 0) or 0)),
+                        int(float(step.get("drag_steps", 2) or 2)),
                     )
         if not self.rows:
             self.add_row_values("", "", "left", "", "", 0, 0, 0.0)
@@ -2040,7 +2172,60 @@ class MousemoveConfigDialog(Gtk.Dialog):
         x: int,
         y: int,
         wait: float,
+        action: str = "",
+        button: str = "",
+        source_type: str = "",
+        target_type: str = "",
+        input_type: str = "",
+        source_x: int = 0,
+        source_y: int = 0,
+        drag_steps: int = 2,
     ) -> None:
+        action = action.strip().lower()
+        button = button.strip().lower()
+        source_type = source_type.strip().lower()
+        target_type = target_type.strip().lower()
+        input_type = input_type.strip().lower()
+        if not action:
+            if click in {"left", "right", "double-left", "hover"}:
+                action = "click"
+                button = click
+                target_type = "template"
+            elif click == "drag":
+                action = "drag"
+                source_type = "template"
+                target_type = "template"
+            elif click == "drag-position":
+                action = "drag"
+                source_type = "template"
+                target_type = "position"
+            elif click == "position":
+                action = "move"
+                target_type = "position"
+            elif click == "previous-position":
+                action = "move"
+                target_type = "previous-position"
+            elif click == "text":
+                action = "input"
+                input_type = "text"
+            elif click == "keys":
+                action = "input"
+                input_type = "keys"
+        if action not in {value for value, _label in self.ACTION_OPTIONS}:
+            action = "click"
+        if button not in {value for value, _label in self.BUTTON_OPTIONS}:
+            button = "left"
+        if source_type not in {value for value, _label in self.SOURCE_OPTIONS}:
+            source_type = "template"
+        if target_type not in {value for value, _label in self.TARGET_OPTIONS}:
+            target_type = "template" if action in {"click", "drag"} else "position"
+        if input_type not in {value for value, _label in self.INPUT_OPTIONS}:
+            input_type = "keys"
+        drag_steps = max(1, min(int(drag_steps or 2), 200))
+        target_template = target
+        if action == "click" and target_type == "template" and not target_template:
+            target_template = template
+
         row_event = Gtk.EventBox()
         row_event.set_visible_window(False)
         row_event.drag_dest_set(
@@ -2083,9 +2268,37 @@ class MousemoveConfigDialog(Gtk.Dialog):
         reorder_box.pack_start(number_label, False, False, 0)
         row.pack_start(reorder_box, False, False, 0)
 
+        action_combo = Gtk.ComboBoxText()
+        for value, label in self.ACTION_OPTIONS:
+            action_combo.append(value, label)
+        action_combo.set_active_id(action)
+        action_combo.set_size_request(170, -1)
+        row.pack_start(action_combo, False, False, 0)
+
+        details_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        details_box.set_hexpand(True)
+        row.pack_start(details_box, True, True, 0)
+
         source_slot = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        source_slot.set_size_request(330, -1)
-        row.pack_start(source_slot, False, False, 0)
+        source_slot.set_hexpand(True)
+        source_slot.set_no_show_all(True)
+        details_box.pack_start(source_slot, True, True, 0)
+
+        button_combo = Gtk.ComboBoxText()
+        for value, label in self.BUTTON_OPTIONS:
+            button_combo.append(value, label)
+        button_combo.set_active_id(button)
+        button_combo.set_size_request(150, -1)
+        button_combo.set_no_show_all(True)
+        source_slot.pack_start(button_combo, False, False, 0)
+
+        source_type_combo = Gtk.ComboBoxText()
+        for value, label in self.SOURCE_OPTIONS:
+            source_type_combo.append(value, label)
+        source_type_combo.set_active_id(source_type)
+        source_type_combo.set_size_request(155, -1)
+        source_type_combo.set_no_show_all(True)
+        source_slot.pack_start(source_type_combo, False, False, 0)
 
         template_entry = Gtk.Entry()
         template_entry.set_text(template)
@@ -2099,6 +2312,28 @@ class MousemoveConfigDialog(Gtk.Dialog):
         browse_button.set_no_show_all(True)
         browse_button.connect("clicked", self.choose_template, template_entry)
         source_slot.pack_start(browse_button, False, False, 0)
+
+        source_x_spin = Gtk.SpinButton.new_with_range(0, 20000, 1)
+        source_x_spin.set_value(max(source_x, 0))
+        source_x_spin.set_size_request(78, -1)
+        source_x_spin.set_no_show_all(True)
+        source_x_spin.connect("focus-in-event", self.select_row_by_widget)
+        source_slot.pack_start(source_x_spin, False, False, 0)
+
+        source_y_spin = Gtk.SpinButton.new_with_range(0, 20000, 1)
+        source_y_spin.set_value(max(source_y, 0))
+        source_y_spin.set_size_request(78, -1)
+        source_y_spin.set_no_show_all(True)
+        source_y_spin.connect("focus-in-event", self.select_row_by_widget)
+        source_slot.pack_start(source_y_spin, False, False, 0)
+
+        input_type_combo = Gtk.ComboBoxText()
+        for value, label in self.INPUT_OPTIONS:
+            input_type_combo.append(value, label)
+        input_type_combo.set_active_id(input_type)
+        input_type_combo.set_size_request(130, -1)
+        input_type_combo.set_no_show_all(True)
+        source_slot.pack_start(input_type_combo, False, False, 0)
 
         keys_entry = Gtk.Entry()
         keys_entry.set_text(keys)
@@ -2123,27 +2358,26 @@ class MousemoveConfigDialog(Gtk.Dialog):
         text_entry.connect("focus-in-event", self.select_row_by_widget)
         source_slot.pack_start(text_entry, True, True, 0)
 
-        x_spin = Gtk.SpinButton.new_with_range(0, 20000, 1)
-        x_spin.set_value(max(x, 0))
-        x_spin.set_size_request(90, -1)
-        x_spin.set_no_show_all(True)
-        x_spin.connect("focus-in-event", self.select_row_by_widget)
-        source_slot.pack_start(x_spin, False, False, 0)
-
-        y_spin = Gtk.SpinButton.new_with_range(0, 20000, 1)
-        y_spin.set_value(max(y, 0))
-        y_spin.set_size_request(90, -1)
-        y_spin.set_no_show_all(True)
-        y_spin.connect("focus-in-event", self.select_row_by_widget)
-        source_slot.pack_start(y_spin, False, False, 0)
+        to_label = Gtk.Label(label="to")
+        to_label.set_no_show_all(True)
+        details_box.pack_start(to_label, False, False, 0)
 
         target_slot = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        target_slot.set_size_request(300, -1)
-        row.pack_start(target_slot, False, False, 0)
+        target_slot.set_hexpand(True)
+        target_slot.set_no_show_all(True)
+        details_box.pack_start(target_slot, True, True, 0)
+
+        target_type_combo = Gtk.ComboBoxText()
+        for value, label in self.TARGET_OPTIONS:
+            target_type_combo.append(value, label)
+        target_type_combo.set_active_id(target_type)
+        target_type_combo.set_size_request(155, -1)
+        target_type_combo.set_no_show_all(True)
+        target_slot.pack_start(target_type_combo, False, False, 0)
 
         target_entry = Gtk.Entry()
-        target_entry.set_text(target)
-        target_entry.set_placeholder_text("Drag target template")
+        target_entry.set_text(target_template)
+        target_entry.set_placeholder_text("Target template")
         target_entry.set_hexpand(True)
         target_entry.set_no_show_all(True)
         target_entry.connect("focus-in-event", self.select_row_by_widget)
@@ -2154,13 +2388,31 @@ class MousemoveConfigDialog(Gtk.Dialog):
         target_browse_button.connect("clicked", self.choose_template, target_entry)
         target_slot.pack_start(target_browse_button, False, False, 0)
 
-        click_combo = Gtk.ComboBoxText()
-        for value, label in self.CLICK_OPTIONS:
-            click_combo.append(value, label)
-        valid_clicks = {value for value, _ in self.CLICK_OPTIONS}
-        click_combo.set_active_id(click if click in valid_clicks else "left")
-        click_combo.set_size_request(170, -1)
-        row.pack_start(click_combo, False, False, 0)
+        x_spin = Gtk.SpinButton.new_with_range(0, 20000, 1)
+        x_spin.set_value(max(x, 0))
+        x_spin.set_size_request(78, -1)
+        x_spin.set_no_show_all(True)
+        x_spin.connect("focus-in-event", self.select_row_by_widget)
+        target_slot.pack_start(x_spin, False, False, 0)
+
+        y_spin = Gtk.SpinButton.new_with_range(0, 20000, 1)
+        y_spin.set_value(max(y, 0))
+        y_spin.set_size_request(78, -1)
+        y_spin.set_no_show_all(True)
+        y_spin.connect("focus-in-event", self.select_row_by_widget)
+        target_slot.pack_start(y_spin, False, False, 0)
+
+        drag_steps_label = Gtk.Label(label="Steps")
+        drag_steps_label.set_no_show_all(True)
+        target_slot.pack_start(drag_steps_label, False, False, 0)
+
+        drag_steps_spin = Gtk.SpinButton.new_with_range(1, 200, 1)
+        drag_steps_spin.set_value(drag_steps)
+        drag_steps_spin.set_size_request(56, -1)
+        drag_steps_spin.set_tooltip_text("Smooth drag movement steps")
+        drag_steps_spin.set_no_show_all(True)
+        drag_steps_spin.connect("focus-in-event", self.select_row_by_widget)
+        target_slot.pack_start(drag_steps_spin, False, False, 0)
 
         wait_spin = Gtk.SpinButton.new_with_range(0.0, 60.0, 0.1)
         wait_spin.set_digits(2)
@@ -2169,14 +2421,28 @@ class MousemoveConfigDialog(Gtk.Dialog):
         wait_spin.connect("focus-in-event", self.select_row_by_widget)
         row.pack_start(wait_spin, False, False, 0)
 
+        delete_button = Gtk.Button()
+        delete_button.set_tooltip_text("Node entfernen")
+        delete_button.set_size_request(34, -1)
+        delete_icon = Gtk.Image.new_from_icon_name("user-trash-symbolic", Gtk.IconSize.BUTTON)
+        delete_button.add(delete_icon)
+        row.pack_start(delete_button, False, False, 0)
+
         row_data: dict[str, Gtk.Widget] = {
             "row": row_event,
             "row_content": row,
             "number": number_label,
             "handle": handle_event,
             "handle_label": handle_box,
+            "action": action_combo,
+            "details": details_box,
             "source_slot": source_slot,
+            "to_label": to_label,
             "target_slot": target_slot,
+            "button": button_combo,
+            "source_type": source_type_combo,
+            "target_type": target_type_combo,
+            "input_type": input_type_combo,
             "template": template_entry,
             "template_button": browse_button,
             "target": target_entry,
@@ -2184,22 +2450,36 @@ class MousemoveConfigDialog(Gtk.Dialog):
             "keys": keys_entry,
             "record_keys_button": record_keys_button,
             "text": text_entry,
+            "source_x": source_x_spin,
+            "source_y": source_y_spin,
             "x": x_spin,
             "y": y_spin,
-            "click": click_combo,
+            "drag_steps_label": drag_steps_label,
+            "drag_steps": drag_steps_spin,
             "wait": wait_spin,
+            "delete": delete_button,
         }
+        delete_button.connect("clicked", self.confirm_remove_row, row_data)
         handle_event.connect("drag-data-get", self.on_row_drag_data_get, row_data)
         handle_event.connect("drag-begin", self.on_row_drag_begin, row_data)
         handle_event.connect("drag-end", self.on_row_drag_end)
         row_event.connect("drag-motion", self.on_row_drag_motion, row_data)
         row_event.connect("drag-leave", self.on_row_drag_leave)
         row_event.connect("drag-data-received", self.on_row_drag_data_received, row_data)
-        click_combo.connect("changed", self.on_click_changed, row_data)
+        action_combo.connect("changed", self.on_click_changed, row_data)
+        button_combo.connect("changed", self.on_click_changed, row_data)
+        source_type_combo.connect("changed", self.on_click_changed, row_data)
+        target_type_combo.connect("changed", self.on_click_changed, row_data)
+        input_type_combo.connect("changed", self.on_click_changed, row_data)
         for widget in (
             row_event,
             handle_event,
             handle_box,
+            action_combo,
+            button_combo,
+            source_type_combo,
+            target_type_combo,
+            input_type_combo,
             template_entry,
             browse_button,
             target_entry,
@@ -2207,10 +2487,15 @@ class MousemoveConfigDialog(Gtk.Dialog):
             keys_entry,
             record_keys_button,
             text_entry,
+            to_label,
+            source_x_spin,
+            source_y_spin,
             x_spin,
             y_spin,
-            click_combo,
+            drag_steps_label,
+            drag_steps_spin,
             wait_spin,
+            delete_button,
         ):
             widget.connect("button-press-event", self.select_row_by_widget)
             self.widget_rows[id(widget)] = row_data
@@ -2408,7 +2693,14 @@ class MousemoveConfigDialog(Gtk.Dialog):
         self.update_target_visibility(row_data)
 
     def update_target_visibility(self, row_data: dict[str, Gtk.Widget]) -> None:
-        click_combo = row_data.get("click")
+        action_combo = row_data.get("action")
+        button_combo = row_data.get("button")
+        source_slot = row_data.get("source_slot")
+        to_label = row_data.get("to_label")
+        target_slot = row_data.get("target_slot")
+        source_type_combo = row_data.get("source_type")
+        target_type_combo = row_data.get("target_type")
+        input_type_combo = row_data.get("input_type")
         template_entry = row_data.get("template")
         template_button = row_data.get("template_button")
         target_entry = row_data.get("target")
@@ -2416,37 +2708,126 @@ class MousemoveConfigDialog(Gtk.Dialog):
         keys_entry = row_data.get("keys")
         record_keys_button = row_data.get("record_keys_button")
         text_entry = row_data.get("text")
+        source_x_spin = row_data.get("source_x")
+        source_y_spin = row_data.get("source_y")
         x_spin = row_data.get("x")
         y_spin = row_data.get("y")
-        if not isinstance(click_combo, Gtk.ComboBoxText):
+        drag_steps_label = row_data.get("drag_steps_label")
+        drag_steps_spin = row_data.get("drag_steps")
+        if not isinstance(action_combo, Gtk.ComboBoxText):
             return
-        click = click_combo.get_active_id()
-        template_visible = click in {
-            "left",
-            "right",
-            "double-left",
-            "hover",
-            "drag",
-            "drag-position",
-        }
-        for widget in (template_entry, template_button):
+        action = action_combo.get_active_id() or "click"
+        source_type = (
+            source_type_combo.get_active_id()
+            if isinstance(source_type_combo, Gtk.ComboBoxText)
+            else "template"
+        )
+        target_type = (
+            target_type_combo.get_active_id()
+            if isinstance(target_type_combo, Gtk.ComboBoxText)
+            else "template"
+        )
+        input_type = (
+            input_type_combo.get_active_id()
+            if isinstance(input_type_combo, Gtk.ComboBoxText)
+            else "keys"
+        )
+        for widget in (
+            source_slot,
+            to_label,
+            target_slot,
+            button_combo,
+            source_type_combo,
+            target_type_combo,
+            input_type_combo,
+            template_entry,
+            template_button,
+            target_entry,
+            target_button,
+            keys_entry,
+            record_keys_button,
+            text_entry,
+            source_x_spin,
+            source_y_spin,
+            x_spin,
+            y_spin,
+            drag_steps_label,
+            drag_steps_spin,
+        ):
             if isinstance(widget, Gtk.Widget):
-                widget.show() if template_visible else widget.hide()
+                widget.hide()
 
-        visible = click == "drag"
-        for widget in (target_entry, target_button):
-            if isinstance(widget, Gtk.Widget):
-                widget.show() if visible else widget.hide()
-        if isinstance(keys_entry, Gtk.Widget):
-            keys_entry.show() if click == "keys" else keys_entry.hide()
-        if isinstance(record_keys_button, Gtk.Widget):
-            record_keys_button.show() if click == "keys" else record_keys_button.hide()
-        if isinstance(text_entry, Gtk.Widget):
-            text_entry.show() if click == "text" else text_entry.hide()
-        position_visible = click in {"position", "drag-position"}
-        for widget in (x_spin, y_spin):
-            if isinstance(widget, Gtk.Widget):
-                widget.show() if position_visible else widget.hide()
+        if action == "click":
+            if isinstance(source_slot, Gtk.Widget):
+                source_slot.show()
+            if isinstance(target_slot, Gtk.Widget):
+                target_slot.show()
+            if isinstance(button_combo, Gtk.Widget):
+                button_combo.show()
+            if isinstance(target_type_combo, Gtk.Widget):
+                target_type_combo.show()
+        elif action == "drag":
+            if isinstance(source_slot, Gtk.Widget):
+                source_slot.show()
+            if isinstance(to_label, Gtk.Widget):
+                to_label.show()
+            if isinstance(target_slot, Gtk.Widget):
+                target_slot.show()
+            if isinstance(source_type_combo, Gtk.Widget):
+                source_type_combo.show()
+            if isinstance(target_type_combo, Gtk.Widget):
+                target_type_combo.show()
+        elif action == "move":
+            if isinstance(target_slot, Gtk.Widget):
+                target_slot.show()
+            if isinstance(target_type_combo, Gtk.Widget):
+                target_type_combo.show()
+        elif action == "input":
+            if isinstance(source_slot, Gtk.Widget):
+                source_slot.show()
+            if isinstance(input_type_combo, Gtk.Widget):
+                input_type_combo.show()
+
+        if action == "drag" and source_type == "template":
+            for widget in (template_entry, template_button):
+                if isinstance(widget, Gtk.Widget):
+                    widget.show()
+        if action == "drag" and source_type == "position":
+            for widget in (source_x_spin, source_y_spin):
+                if isinstance(widget, Gtk.Widget):
+                    widget.show()
+
+        if action in {"click", "drag", "move"} and target_type == "template":
+            for widget in (target_entry, target_button):
+                if isinstance(widget, Gtk.Widget):
+                    widget.show()
+        if action in {"click", "drag", "move"} and target_type == "position":
+            for widget in (x_spin, y_spin):
+                if isinstance(widget, Gtk.Widget):
+                    widget.show()
+        if action == "drag":
+            for widget in (drag_steps_label, drag_steps_spin):
+                if isinstance(widget, Gtk.Widget):
+                    widget.show()
+        if action == "input" and input_type == "keys":
+            for widget in (keys_entry, record_keys_button):
+                if isinstance(widget, Gtk.Widget):
+                    widget.show()
+        if action == "input" and input_type == "text":
+            if isinstance(text_entry, Gtk.Widget):
+                text_entry.show()
+
+        for combo in (source_type_combo, target_type_combo):
+            if not isinstance(combo, Gtk.ComboBoxText):
+                continue
+            if action == "drag" and combo is source_type_combo:
+                combo.show()
+            elif action in {"click", "drag", "move"} and combo is target_type_combo:
+                combo.show()
+        if isinstance(input_type_combo, Gtk.ComboBoxText) and action == "input":
+            input_type_combo.show()
+        if isinstance(button_combo, Gtk.ComboBoxText) and action == "click":
+            button_combo.show()
 
     def select_row_by_widget(self, widget: Gtk.Widget, *_args) -> bool:
         row_data = self.widget_rows.get(id(widget))
@@ -2469,20 +2850,48 @@ class MousemoveConfigDialog(Gtk.Dialog):
 
     def add_row(self, _button: Gtk.Button) -> None:
         self.add_row_values("", "", "left", "", "", 0, 0, 0.0)
-        template_entry = self.rows[-1]["template"]
-        if isinstance(template_entry, Gtk.Entry):
-            template_entry.grab_focus()
+        action_combo = self.rows[-1]["action"]
+        if isinstance(action_combo, Gtk.ComboBoxText):
+            action_combo.grab_focus()
+
+    def confirm_remove_row(
+        self,
+        _button: Gtk.Button,
+        row_data: dict[str, Gtk.Widget],
+    ) -> None:
+        if row_data not in self.rows:
+            return
+        number = self.rows.index(row_data) + 1
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.WARNING,
+            buttons=Gtk.ButtonsType.NONE,
+            text=f"Node {number} entfernen?",
+        )
+        dialog.format_secondary_text("Dieser Schritt wird aus der Automation gelöscht.")
+        dialog.add_button("Abbrechen", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Entfernen", Gtk.ResponseType.OK)
+        response = dialog.run()
+        dialog.destroy()
+        if response == Gtk.ResponseType.OK:
+            self.remove_row_data(row_data)
+
+    def remove_row_data(self, row_data: dict[str, Gtk.Widget]) -> None:
+        if row_data not in self.rows:
+            return
+        self.rows_box.remove(row_data["row"])
+        for widget in row_data.values():
+            self.widget_rows.pop(id(widget), None)
+        self.rows.remove(row_data)
+        self.selected_row = self.rows[-1] if self.rows else None
+        if not self.rows:
+            self.add_row_values("", "", "left", "", "", 0, 0, 0.0)
+        self.update_row_numbers()
 
     def remove_selected_row(self, _button: Gtk.Button) -> None:
         if self.selected_row in self.rows:
-            row = self.selected_row["row"]
-            self.rows_box.remove(row)
-            for widget in self.selected_row.values():
-                self.widget_rows.pop(id(widget), None)
-            self.rows.remove(self.selected_row)
-            self.selected_row = self.rows[-1] if self.rows else None
-        if not self.rows:
-            self.add_row_values("", "", "left", "", "", 0, 0, 0.0)
+            self.remove_row_data(self.selected_row)
 
     def choose_template(self, _button: Gtk.Button, entry: Gtk.Entry) -> None:
         chooser = Gtk.FileChooserDialog(
@@ -2516,39 +2925,91 @@ class MousemoveConfigDialog(Gtk.Dialog):
             target_entry = row["target"]
             keys_entry = row["keys"]
             text_entry = row["text"]
+            source_x_spin = row["source_x"]
+            source_y_spin = row["source_y"]
             x_spin = row["x"]
             y_spin = row["y"]
-            click_combo = row["click"]
+            drag_steps_spin = row["drag_steps"]
+            action_combo = row["action"]
+            button_combo = row["button"]
+            source_type_combo = row["source_type"]
+            target_type_combo = row["target_type"]
+            input_type_combo = row["input_type"]
             wait_spin = row["wait"]
             if not (
                 isinstance(template_entry, Gtk.Entry)
                 and isinstance(target_entry, Gtk.Entry)
                 and isinstance(keys_entry, Gtk.Entry)
                 and isinstance(text_entry, Gtk.Entry)
+                and isinstance(source_x_spin, Gtk.SpinButton)
+                and isinstance(source_y_spin, Gtk.SpinButton)
                 and isinstance(x_spin, Gtk.SpinButton)
                 and isinstance(y_spin, Gtk.SpinButton)
-                and isinstance(click_combo, Gtk.ComboBoxText)
+                and isinstance(drag_steps_spin, Gtk.SpinButton)
+                and isinstance(action_combo, Gtk.ComboBoxText)
+                and isinstance(button_combo, Gtk.ComboBoxText)
+                and isinstance(source_type_combo, Gtk.ComboBoxText)
+                and isinstance(target_type_combo, Gtk.ComboBoxText)
+                and isinstance(input_type_combo, Gtk.ComboBoxText)
                 and isinstance(wait_spin, Gtk.SpinButton)
             ):
                 continue
-            template = template_entry.get_text().strip()
-            click = click_combo.get_active_id() or "left"
+            action = action_combo.get_active_id() or "click"
+            button = button_combo.get_active_id() or "left"
+            source_type = source_type_combo.get_active_id() or "template"
+            target_type = target_type_combo.get_active_id() or "template"
+            input_type = input_type_combo.get_active_id() or "keys"
+            source_template = template_entry.get_text().strip()
+            target_template = target_entry.get_text().strip()
             keys = keys_entry.get_text().strip()
             text = text_entry.get_text()
-            if click == "keys" and not keys:
-                continue
-            if click == "text" and not text:
-                continue
-            if click not in {"keys", "text", "position", "previous-position"} and not template:
-                continue
+            template = source_template
+            target = target_template
+            click = "left"
+            if action == "click":
+                click = button
+                if target_type == "template" and not target_template:
+                    continue
+                template = target_template if target_type == "template" else ""
+                target = target_template if target_type == "template" else ""
+            elif action == "drag":
+                click = "drag-position" if target_type == "position" else "drag"
+                if source_type == "template" and not source_template:
+                    continue
+                if target_type == "template" and not target_template:
+                    continue
+                template = source_template
+                target = target_template
+            elif action == "move":
+                click = "previous-position" if target_type == "previous-position" else "position"
+                if target_type == "template" and not target_template:
+                    continue
+                template = target_template if target_type == "template" else ""
+                target = target_template if target_type == "template" else ""
+            elif action == "input":
+                click = input_type
+                template = ""
+                target = ""
+                if input_type == "keys" and not keys:
+                    continue
+                if input_type == "text" and not text:
+                    continue
             steps.append(
                 {
                     "template": template,
-                    "target": target_entry.get_text().strip(),
+                    "target": target,
+                    "action": action,
+                    "button": button,
+                    "source_type": source_type,
+                    "target_type": target_type,
+                    "input_type": input_type,
                     "keys": keys,
                     "text": text,
+                    "source_x": source_x_spin.get_value_as_int(),
+                    "source_y": source_y_spin.get_value_as_int(),
                     "x": x_spin.get_value_as_int(),
                     "y": y_spin.get_value_as_int(),
+                    "drag_steps": drag_steps_spin.get_value_as_int(),
                     "click": click,
                     "wait": wait_spin.get_value(),
                 }

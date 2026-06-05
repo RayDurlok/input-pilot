@@ -6,6 +6,9 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -18,6 +21,10 @@ TEMPLATE_SERVER = SCRIPT_DIR / "input-pilot-template-server.py"
 CLICK_SCRIPT = SCRIPT_DIR / "wayland-click-image.py"
 CONFIG_FILE = Path.home() / ".config/wayland-automation/mousemove-sequence.json"
 DEFAULT_YDOTOOL_SOCKET = "/tmp/ydotool_socket"
+TEMPLATE_CLICK_RE = re.compile(r"\bclick_x=(-?\d+)\s+click_y=(-?\d+)\b")
+STATE_DIR = Path.home() / ".local/state/wayland-automation"
+SEQUENCE_LOG_FILE = STATE_DIR / "mouse-sequence.log"
+SEQUENCE_LOCK_MAX_AGE = 30.0
 MODIFIER_KEY_CODES = {
     "CTRL": 29,
     "CONTROL": 29,
@@ -122,6 +129,47 @@ def notify_debug(enabled: bool, message: str) -> None:
     subprocess.run(["notify-send", "Input Pilot Debug", message], check=False)
 
 
+def log_sequence(message: str) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    with SEQUENCE_LOG_FILE.open("a", encoding="utf-8") as handle:
+        handle.write(f"{timestamp} {message}\n")
+
+
+class SequenceRunLock:
+    def __init__(self, index: int) -> None:
+        self.path = STATE_DIR / f"mouse-sequence-{index}.lock"
+        self.fd: int | None = None
+
+    def __enter__(self):
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        self.remove_stale_lock()
+        try:
+            self.fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            log_sequence(f"sequence lock busy path={self.path}")
+            return None
+        os.write(self.fd, str(os.getpid()).encode("utf-8"))
+        log_sequence(f"sequence lock acquired path={self.path}")
+        return self
+
+    def __exit__(self, _exc_type, _exc_value, _traceback):
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+        self.path.unlink(missing_ok=True)
+        log_sequence(f"sequence lock released path={self.path}")
+
+    def remove_stale_lock(self) -> None:
+        try:
+            age = time.time() - self.path.stat().st_mtime
+        except FileNotFoundError:
+            return
+        if age > SEQUENCE_LOCK_MAX_AGE:
+            log_sequence(f"sequence lock stale removed path={self.path} age={age:.1f}")
+            self.path.unlink(missing_ok=True)
+
+
 def result_text(result: subprocess.CompletedProcess[str]) -> str:
     return "\n".join(
         part.strip()
@@ -135,6 +183,7 @@ def run_template_command(
     debug: bool,
     not_found_message: str,
 ) -> subprocess.CompletedProcess[str]:
+    log_sequence(f"template_command start {' '.join(command)}")
     result = subprocess.run(
         command,
         check=False,
@@ -142,6 +191,7 @@ def run_template_command(
         stderr=subprocess.PIPE,
         text=True,
     )
+    log_sequence(f"template_command exit={result.returncode} {result_text(result).splitlines()[-1:]}")
     if result.returncode == 0:
         return result
 
@@ -313,106 +363,455 @@ def run_drag_to_position_step(
         run_ydotool(["click", "0x80"], ydotool_socket)
 
 
+def read_int_field(step: dict[str, object], key: str, label: str) -> int:
+    try:
+        return int(float(step.get(key, 0) or 0))
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"{label} has invalid coordinates") from exc
+
+
+def move_to_point(
+    x: int,
+    y: int,
+    ydotool_socket: str | None,
+    click_module,
+):
+    current_position = click_module.read_cursor_position()
+    return click_module.move_cursor_to(
+        x,
+        y,
+        ydotool_socket,
+        verify=False,
+        initial_position=current_position,
+    )
+
+
+def move_to_step_position(
+    step: dict[str, object],
+    role: str,
+    ydotool_socket: str | None,
+    debug: bool,
+    click_module,
+    original_position,
+) -> tuple[int, object | None]:
+    position_type = str(step.get(f"{role}_type", "")).strip().lower()
+    if role == "target" and not position_type:
+        position_type = str(step.get("target_type", "")).strip().lower()
+    if role == "source" and not position_type:
+        position_type = str(step.get("source_type", "")).strip().lower()
+    if position_type not in {"template", "position", "previous-position"}:
+        position_type = "template"
+
+    if position_type == "template":
+        action = str(step.get("action", "")).strip().lower()
+        template = ""
+        if role == "source":
+            template = str(step.get("template", "")).strip()
+        elif action == "drag":
+            template = str(step.get("target", "")).strip()
+        else:
+            template = str(step.get("target", "")).strip() or str(step.get("template", "")).strip()
+        label = "Source" if role == "source" else "Target"
+        if not template:
+            notify_debug(debug, f"{label} screenshot/template is empty.")
+            raise SystemExit(f"{label} screenshot/template is empty")
+        log_sequence(f"move_to_{role} template={template}")
+        result = run_template_command(
+            move_to_template_command(template, ydotool_socket),
+            debug,
+            f"{label} screenshot couldn't be found on screen.",
+        )
+        if result.returncode != 0:
+            log_sequence(f"move_to_{role} failed exit={result.returncode}")
+            return result.returncode, None
+        position = click_module.read_cursor_position()
+        log_sequence(f"move_to_{role} ok cursor={position.x},{position.y}")
+        return 0, position
+
+    if position_type == "previous-position":
+        log_sequence(f"move_to_{role} previous={original_position.x},{original_position.y}")
+        position = move_to_point(
+            original_position.x,
+            original_position.y,
+            ydotool_socket,
+            click_module,
+        )
+        return 0, position
+
+    prefix = "source_" if role == "source" else ""
+    label = "Source mouse position" if role == "source" else "Mouse position"
+    x = read_int_field(step, f"{prefix}x", label)
+    y = read_int_field(step, f"{prefix}y", label)
+    log_sequence(f"move_to_{role} position={x},{y}")
+    position = move_to_point(x, y, ydotool_socket, click_module)
+    return 0, position
+
+
+def parse_template_position(output: str) -> tuple[int, int] | None:
+    match = TEMPLATE_CLICK_RE.search(output)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def locate_template_position(
+    template: str,
+    ydotool_socket: str | None,
+    debug: bool,
+    not_found_message: str,
+) -> tuple[int, int] | None:
+    template_path = Path(template).expanduser()
+    if not template_path.is_file():
+        raise SystemExit(f"Template image not found: {template_path}")
+    command = [str(TEMPLATE_SERVER), str(template_path), "--dry-run"]
+    if ydotool_socket:
+        command.extend(["--ydotool-socket", ydotool_socket])
+    result = run_template_command(command, debug, not_found_message)
+    if result.returncode != 0:
+        return None
+    position = parse_template_position(result_text(result))
+    if position is None:
+        notify_debug(debug, "Template position could not be read from matcher output.")
+        raise SystemExit("Template position could not be read from matcher output")
+    return position
+
+
+def target_coordinates_for_drag(
+    step: dict[str, object],
+    ydotool_socket: str | None,
+    debug: bool,
+    original_position,
+) -> tuple[int, int] | None:
+    target_type = str(step.get("target_type", "template")).strip().lower()
+    if target_type == "previous-position":
+        return original_position.x, original_position.y
+    if target_type == "position":
+        x = read_int_field(step, "x", "Target mouse position")
+        y = read_int_field(step, "y", "Target mouse position")
+        return x, y
+
+    template = str(step.get("target", "")).strip()
+    if not template:
+        notify_debug(debug, "Target screenshot/template is empty.")
+        raise SystemExit("Target screenshot/template is empty")
+    return locate_template_position(
+        template,
+        ydotool_socket,
+        debug,
+        "Target screenshot couldn't be found on screen.",
+    )
+
+
+def smooth_drag_to(
+    start_x: int,
+    start_y: int,
+    target_x: int,
+    target_y: int,
+    ydotool_socket: str | None,
+    debug: bool = False,
+    steps: int = 2,
+) -> None:
+    dx = target_x - start_x
+    dy = target_y - start_y
+    distance = math.hypot(dx, dy)
+    log_sequence(
+        f"smooth_drag start={start_x},{start_y} target={target_x},{target_y} distance={distance:.1f}"
+    )
+    if distance <= 1:
+        run_ydotool(["mousemove", "--", "1", "0"], ydotool_socket)
+        run_ydotool(["mousemove", "--", "-1", "0"], ydotool_socket)
+        return
+
+    unit_x = dx / distance
+    unit_y = dy / distance
+    start_drag_x = round(unit_x * min(16, distance))
+    start_drag_y = round(unit_y * min(16, distance))
+    if start_drag_x or start_drag_y:
+        run_ydotool(["mousemove", "--", str(start_drag_x), str(start_drag_y)], ydotool_socket)
+        time.sleep(0.02)
+
+    current_start_x = start_x + start_drag_x
+    current_start_y = start_y + start_drag_y
+    dx = target_x - current_start_x
+    dy = target_y - current_start_y
+    distance = math.hypot(dx, dy)
+    if distance <= 1:
+        return
+
+    steps = max(1, min(int(steps or 2), 200))
+    log_sequence(f"smooth_drag steps={steps} start_pull={start_drag_x},{start_drag_y}")
+    notify_debug(
+        debug,
+        f"Smooth drag: {steps} steps from {start_x},{start_y} to {target_x},{target_y}.",
+    )
+    previous_x = current_start_x
+    previous_y = current_start_y
+    for step_index in range(1, steps + 1):
+        progress = step_index / steps
+        next_x = round(current_start_x + dx * progress)
+        next_y = round(current_start_y + dy * progress)
+        move_x = next_x - previous_x
+        move_y = next_y - previous_y
+        if move_x or move_y:
+            run_ydotool(["mousemove", "--", str(move_x), str(move_y)], ydotool_socket)
+        previous_x = next_x
+        previous_y = next_y
+        time.sleep(0.003)
+
+
+def run_model_step(
+    step: dict[str, object],
+    ydotool_socket: str | None,
+    debug: bool,
+    click_module,
+    original_position,
+) -> int:
+    action = str(step.get("action", "")).strip().lower()
+    log_sequence(f"run_model_step action={action}")
+    if action == "input":
+        input_type = str(step.get("input_type", "keys")).strip().lower()
+        log_sequence(f"input type={input_type}")
+        if input_type == "text":
+            type_string(str(step.get("text", "")), ydotool_socket)
+        else:
+            send_key_combo(str(step.get("keys", "")).strip(), ydotool_socket)
+        return 0
+
+    if action == "move":
+        return move_to_step_position(
+            step,
+            "target",
+            ydotool_socket,
+            debug,
+            click_module,
+            original_position,
+        )[0]
+
+    if action == "click":
+        target_type = str(step.get("target_type", "template")).strip().lower()
+        if target_type == "template":
+            template = str(step.get("target", "")).strip() or str(step.get("template", "")).strip()
+            button = str(step.get("button", "left")).strip().lower()
+            legacy_step = dict(step, template=template, click=button)
+            result = run_template_command(
+                step_command(legacy_step, ydotool_socket),
+                debug,
+                "Screenshot couldn't be found on screen.",
+            )
+            return result.returncode
+        exit_code, position = move_to_step_position(
+            step,
+            "target",
+            ydotool_socket,
+            debug,
+            click_module,
+            original_position,
+        )
+        if exit_code != 0:
+            return exit_code
+        button = str(step.get("button", "left")).strip().lower()
+        if button == "hover":
+            return 0
+        if position is None:
+            position = click_module.read_cursor_position()
+        click_module.click_at(
+            position.x,
+            position.y,
+            ydotool_socket,
+            repeat=2 if button == "double-left" else 1,
+            button_code="0xC1" if button == "right" else "0xC0",
+            return_cursor=False,
+        )
+        return 0
+
+    if action == "drag":
+        log_sequence(
+            "drag begin "
+            f"source_type={step.get('source_type')} target_type={step.get('target_type')}"
+        )
+        target_position = target_coordinates_for_drag(
+            step,
+            ydotool_socket,
+            debug,
+            original_position,
+        )
+        if target_position is None:
+            log_sequence("drag target_position missing")
+            return 1
+        log_sequence(f"drag target_position={target_position[0]},{target_position[1]}")
+        exit_code, source_position = move_to_step_position(
+            step,
+            "source",
+            ydotool_socket,
+            debug,
+            click_module,
+            original_position,
+        )
+        if exit_code != 0:
+            log_sequence(f"drag source failed exit={exit_code}")
+            return exit_code
+        drag_reached_target = False
+        try:
+            log_sequence("drag mouse_down")
+            run_ydotool(["click", "0x40"], ydotool_socket)
+            time.sleep(0.03)
+            if source_position is None:
+                source_position = click_module.read_cursor_position()
+            log_sequence(f"drag source_position={source_position.x},{source_position.y}")
+            drag_steps = read_int_field(step, "drag_steps", "Smooth drag steps")
+            smooth_drag_to(
+                source_position.x,
+                source_position.y,
+                target_position[0],
+                target_position[1],
+                ydotool_socket,
+                debug,
+                drag_steps,
+            )
+            run_ydotool(["mousemove", "--", "1", "0"], ydotool_socket)
+            run_ydotool(["mousemove", "--", "-1", "0"], ydotool_socket)
+            time.sleep(0.03)
+            drag_reached_target = True
+            log_sequence("drag reached target")
+            return 0
+        finally:
+            run_ydotool(["click", "0x80"], ydotool_socket)
+            log_sequence("drag mouse_up")
+            if drag_reached_target:
+                time.sleep(0.08)
+
+    raise SystemExit(f"Unknown automation action: {action}")
+
+
 def run_sequence(config_file: Path, ydotool_socket: str | None, index: int) -> int:
     automation = load_automation(config_file, index)
     debug = bool(automation.get("debug", False))
     steps = load_steps(config_file, index)
+    log_sequence(
+        f"run index={index} name={automation.get('name', 'Automation')} steps={len(steps)}"
+    )
     if not steps:
         notify_debug(debug, "No mousemove nodes are configured.")
         raise SystemExit(f"No mousemove steps configured: {config_file}")
 
-    click_module = load_click_module()
-    original_position = click_module.read_cursor_position()
-    exit_code = 0
-    try:
-        for step_index, step in enumerate(steps, start=1):
-            click = str(step.get("click", "left")).strip().lower()
-            if click == "drag":
-                print(f"step {step_index}: drag")
-                exit_code = run_drag_step(step, ydotool_socket, debug)
-                if exit_code != 0:
-                    break
-            elif click == "drag-position":
-                print(f"step {step_index}: drag to position")
-                exit_code = run_drag_to_position_step(
-                    step,
-                    ydotool_socket,
-                    debug,
-                    click_module,
-                )
-                if exit_code != 0:
-                    break
-            elif click == "keys":
-                combo = str(step.get("keys", "")).strip()
-                print(f"step {step_index}: keys {combo}")
-                try:
-                    send_key_combo(combo, ydotool_socket)
-                except SystemExit as exc:
-                    notify_debug(debug, str(exc))
-                    raise
-            elif click == "text":
-                text = str(step.get("text", ""))
-                print(f"step {step_index}: text")
-                try:
-                    type_string(text, ydotool_socket)
-                except SystemExit as exc:
-                    notify_debug(debug, str(exc))
-                    raise
-            elif click == "position":
-                try:
-                    x = int(float(step.get("x", 0) or 0))
-                    y = int(float(step.get("y", 0) or 0))
-                except (TypeError, ValueError) as exc:
-                    notify_debug(debug, "Mouse position node has invalid coordinates.")
-                    raise SystemExit("Mouse position node has invalid coordinates") from exc
-                print(f"step {step_index}: move {x},{y}")
-                current_position = click_module.read_cursor_position()
-                click_module.move_cursor_to(
-                    x,
-                    y,
-                    ydotool_socket,
-                    verify=False,
-                    initial_position=current_position,
-                )
-            elif click == "previous-position":
-                print(f"step {step_index}: previous mouse position")
-                current_position = click_module.read_cursor_position()
-                click_module.move_cursor_to(
-                    original_position.x,
-                    original_position.y,
-                    ydotool_socket,
-                    verify=False,
-                    initial_position=current_position,
-                )
-            else:
-                try:
-                    command = step_command(step, ydotool_socket)
-                except SystemExit as exc:
-                    notify_debug(debug, str(exc))
-                    raise
-                print(f"step {step_index}: {' '.join(command)}")
-                result = run_template_command(
-                    command,
-                    debug,
-                    "Screenshot couldn't be found on screen.",
-                )
-                if result.returncode != 0:
-                    exit_code = result.returncode
-                    break
+    with SequenceRunLock(index) as lock:
+        if lock is None:
+            return 0
 
-            wait_seconds = 0.0 if click == "hover" else float(step.get("wait", 0.0) or 0.0)
-            if wait_seconds > 0:
-                time.sleep(wait_seconds)
-    finally:
-        current_position = click_module.read_cursor_position()
-        click_module.move_cursor_to(
-            original_position.x,
-            original_position.y,
-            ydotool_socket,
-            verify=False,
-            initial_position=current_position,
-        )
-    return exit_code
+        click_module = load_click_module()
+        original_position = click_module.read_cursor_position()
+        exit_code = 0
+        try:
+            for step_index, step in enumerate(steps, start=1):
+                action = str(step.get("action", "")).strip().lower()
+                click = str(step.get("click", "left")).strip().lower()
+                log_sequence(f"step {step_index} action={action} click={click}")
+                if action in {"click", "drag", "move", "input"}:
+                    print(f"step {step_index}: {action}")
+                    try:
+                        exit_code = run_model_step(
+                            step,
+                            ydotool_socket,
+                            debug,
+                            click_module,
+                            original_position,
+                        )
+                    except SystemExit as exc:
+                        notify_debug(debug, str(exc))
+                        raise
+                    if exit_code != 0:
+                        break
+                elif click == "drag":
+                    print(f"step {step_index}: drag")
+                    exit_code = run_drag_step(step, ydotool_socket, debug)
+                    if exit_code != 0:
+                        break
+                elif click == "drag-position":
+                    print(f"step {step_index}: drag to position")
+                    exit_code = run_drag_to_position_step(
+                        step,
+                        ydotool_socket,
+                        debug,
+                        click_module,
+                    )
+                    if exit_code != 0:
+                        break
+                elif click == "keys":
+                    combo = str(step.get("keys", "")).strip()
+                    print(f"step {step_index}: keys {combo}")
+                    try:
+                        send_key_combo(combo, ydotool_socket)
+                    except SystemExit as exc:
+                        notify_debug(debug, str(exc))
+                        raise
+                elif click == "text":
+                    text = str(step.get("text", ""))
+                    print(f"step {step_index}: text")
+                    try:
+                        type_string(text, ydotool_socket)
+                    except SystemExit as exc:
+                        notify_debug(debug, str(exc))
+                        raise
+                elif click == "position":
+                    try:
+                        x = int(float(step.get("x", 0) or 0))
+                        y = int(float(step.get("y", 0) or 0))
+                    except (TypeError, ValueError) as exc:
+                        notify_debug(debug, "Mouse position node has invalid coordinates.")
+                        raise SystemExit("Mouse position node has invalid coordinates") from exc
+                    print(f"step {step_index}: move {x},{y}")
+                    current_position = click_module.read_cursor_position()
+                    click_module.move_cursor_to(
+                        x,
+                        y,
+                        ydotool_socket,
+                        verify=False,
+                        initial_position=current_position,
+                    )
+                elif click == "previous-position":
+                    print(f"step {step_index}: previous mouse position")
+                    current_position = click_module.read_cursor_position()
+                    click_module.move_cursor_to(
+                        original_position.x,
+                        original_position.y,
+                        ydotool_socket,
+                        verify=False,
+                        initial_position=current_position,
+                    )
+                else:
+                    try:
+                        command = step_command(step, ydotool_socket)
+                    except SystemExit as exc:
+                        notify_debug(debug, str(exc))
+                        raise
+                    print(f"step {step_index}: {' '.join(command)}")
+                    result = run_template_command(
+                        command,
+                        debug,
+                        "Screenshot couldn't be found on screen.",
+                    )
+                    if result.returncode != 0:
+                        exit_code = result.returncode
+                        break
+
+                button = str(step.get("button", "")).strip().lower()
+                target_type = str(step.get("target_type", "")).strip().lower()
+                if action == "click" and button == "hover" and target_type == "template":
+                    wait_seconds = 0.0
+                else:
+                    wait_seconds = float(step.get("wait", 0.0) or 0.0)
+                if wait_seconds > 0:
+                    time.sleep(wait_seconds)
+        finally:
+            current_position = click_module.read_cursor_position()
+            click_module.move_cursor_to(
+                original_position.x,
+                original_position.y,
+                ydotool_socket,
+                verify=False,
+                initial_position=current_position,
+            )
+        return exit_code
 
 
 def parse_args() -> argparse.Namespace:
