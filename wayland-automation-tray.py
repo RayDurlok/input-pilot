@@ -120,6 +120,7 @@ QT_KEY_CODES = {
     "PageDown": 0x01000017,
     "Insert": 0x01000006,
     "Delete": 0x01000007,
+    "Backspace": 0x01000003,
 }
 PURE_MODIFIER_KEYVALS = {
     "Shift_L",
@@ -153,6 +154,35 @@ RECORDER_KEY_NAMES = {
     "Insert": "Insert",
     "Delete": "Delete",
     "BackSpace": "Backspace",
+    "KP_0": "0",
+    "KP_1": "1",
+    "KP_2": "2",
+    "KP_3": "3",
+    "KP_4": "4",
+    "KP_5": "5",
+    "KP_6": "6",
+    "KP_7": "7",
+    "KP_8": "8",
+    "KP_9": "9",
+    "exclam": "1",
+    "onesuperior": "1",
+    "quotedbl": "2",
+    "at": "2",
+    "twosuperior": "2",
+    "section": "3",
+    "numbersign": "3",
+    "threesuperior": "3",
+    "dollar": "4",
+    "percent": "5",
+    "ampersand": "6",
+    "slash": "7",
+    "braceleft": "7",
+    "parenleft": "8",
+    "bracketleft": "8",
+    "parenright": "9",
+    "bracketright": "9",
+    "equal": "0",
+    "braceright": "0",
 }
 RECORDER_SUPPORTED_KEYS = (
     set(HOTKEY_KEYS)
@@ -189,6 +219,8 @@ def canonical_shortcut(shortcut: str) -> str:
         "INS": "Insert",
         "DELETE": "Delete",
         "DEL": "Delete",
+        "BACKSPACE": "Backspace",
+        "BKSP": "Backspace",
     }
     key = key_names.get(key, key)
     modifier_names = {
@@ -199,7 +231,21 @@ def canonical_shortcut(shortcut: str) -> str:
         "SUPER": "Meta",
         "SHIFT": "Shift",
     }
-    modifiers = [modifier_names.get(part.upper(), part.title()) for part in parts[:-1]]
+    modifier_order = {
+        "Ctrl": 0,
+        "Alt": 1,
+        "Shift": 2,
+        "Meta": 3,
+    }
+    modifiers = []
+    seen_modifiers = set()
+    for part in parts[:-1]:
+        modifier = modifier_names.get(part.upper(), part.title())
+        if modifier not in MODIFIER_CODES or modifier in seen_modifiers:
+            continue
+        modifiers.append(modifier)
+        seen_modifiers.add(modifier)
+    modifiers.sort(key=lambda item: modifier_order.get(item, 99))
     return shortcut_label("+".join(modifiers), key)
 
 
@@ -1627,14 +1673,16 @@ def apply_shortcuts(shortcuts: dict[str, str]) -> None:
     mouse_automations = load_mouse_config().get("automations", [])
     register_mouse_sequence_shortcuts(mouse_automations if isinstance(mouse_automations, list) else [])
     register_folder_template_shortcuts(load_folder_templates())
-    configured = set(shortcuts)
+
+    for shortcut, target in shortcuts.items():
+        target = target.strip()
+        if target:
+            register_shortcut(shortcut, target)
+
     for modifier in MODIFIER_OPTIONS:
         for function_key in FUNCTION_KEYS:
             shortcut = shortcut_label(modifier, function_key)
-            target = shortcuts.get(shortcut, "").strip()
-            if target:
-                register_shortcut(shortcut, target)
-            elif shortcut not in configured:
+            if shortcut not in shortcuts:
                 unregister_shortcut(shortcut)
 
     for function_key in FUNCTION_KEYS:
@@ -1646,11 +1694,17 @@ def apply_shortcuts(shortcuts: dict[str, str]) -> None:
             unregister_dialog_shortcut(function_key)
 
 
+def unregister_configured_shortcuts(shortcuts: dict[str, str]) -> None:
+    for shortcut in shortcuts:
+        unregister_shortcut(shortcut)
+
+
 def deactivate_shortcuts() -> None:
     disable_legacy_shortcuts()
     unregister_emergency_shortcut()
     unregister_mouse_sequence_shortcuts()
     unregister_folder_template_shortcuts()
+    unregister_configured_shortcuts(load_shortcuts())
     for modifier in MODIFIER_OPTIONS:
         for function_key in FUNCTION_KEYS:
             unregister_shortcut(shortcut_label(modifier, function_key))
@@ -1868,10 +1922,12 @@ class AutomationTray:
         dialog.destroy()
 
     def show_configuration(self, _item: Gtk.MenuItem) -> None:
-        dialog = ShortcutConfigDialog(load_shortcuts())
+        previous_shortcuts = load_shortcuts()
+        dialog = ShortcutConfigDialog(previous_shortcuts)
         response = dialog.run()
         if response == Gtk.ResponseType.OK:
             shortcuts = dialog.shortcuts()
+            unregister_configured_shortcuts(previous_shortcuts)
             save_shortcuts(shortcuts)
             apply_shortcuts(shortcuts)
             notify(APP_NAME, "Shortcuts gespeichert.")
@@ -4104,11 +4160,16 @@ class TextReplacementDialog(Gtk.Dialog):
 
 
 class ShortcutConfigDialog(Gtk.Dialog):
+    SHORTCUT_WIDTH = 230
+    RECORD_WIDTH = 86
+    BROWSE_WIDTH = 86
+    REMOVE_WIDTH = 36
+
     def __init__(self, shortcuts: dict[str, str]) -> None:
         super().__init__(title="Hotkeys")
-        self.set_default_size(820, 440)
+        self.set_default_size(900, 440)
         self.set_border_width(10)
-        self.rows: list[tuple[Gtk.ComboBoxText, Gtk.ComboBoxText, Gtk.Entry]] = []
+        self.rows: list[dict[str, Gtk.Widget]] = []
 
         content = self.get_content_area()
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -4117,12 +4178,19 @@ class ShortcutConfigDialog(Gtk.Dialog):
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         shortcut_header = Gtk.Label(label="Shortcut")
         shortcut_header.set_xalign(0)
-        shortcut_header.set_width_chars(24)
+        shortcut_header.set_size_request(self.SHORTCUT_WIDTH, -1)
+        record_spacer = Gtk.Label()
+        record_spacer.set_size_request(self.RECORD_WIDTH, -1)
         target_header = Gtk.Label(label="Path or link")
         target_header.set_xalign(0)
         target_header.set_hexpand(True)
         header.pack_start(shortcut_header, False, False, 0)
+        header.pack_start(record_spacer, False, False, 0)
         header.pack_start(target_header, True, True, 0)
+        for width in (self.BROWSE_WIDTH, self.REMOVE_WIDTH):
+            spacer = Gtk.Label()
+            spacer.set_size_request(width, -1)
+            header.pack_start(spacer, False, False, 0)
         outer.pack_start(header, False, False, 0)
 
         scroller = Gtk.ScrolledWindow()
@@ -4135,10 +4203,9 @@ class ShortcutConfigDialog(Gtk.Dialog):
         scroller.add(self.rows_box)
 
         for sc, target in shortcuts.items():
-            modifier, key = self._split_shortcut(sc)
-            self._add_row(modifier, key, target)
+            self._add_row(canonical_shortcut(sc), target)
         if not shortcuts:
-            self._add_row("", "F1", "")
+            self._add_row("F1", "")
 
         buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         outer.pack_start(buttons, False, False, 0)
@@ -4164,18 +4231,37 @@ class ShortcutConfigDialog(Gtk.Dialog):
     def _on_save(self, _button: Gtk.Button) -> None:
         seen: dict[str, int] = {}
         duplicates: list[str] = []
-        for modifier_combo, key_combo, target_entry in self.rows:
+        invalid: list[str] = []
+        for row_data in self.rows:
+            shortcut_entry = row_data["shortcut"]
+            target_entry = row_data["target"]
+            if not isinstance(shortcut_entry, Gtk.Entry) or not isinstance(target_entry, Gtk.Entry):
+                continue
             if not target_entry.get_text().strip():
                 continue
-            modifier_idx = modifier_combo.get_active()
-            modifier = MODIFIER_OPTIONS[modifier_idx] if modifier_idx >= 0 else ""
-            key_idx = key_combo.get_active()
-            if key_idx < 0:
+            label = canonical_shortcut(shortcut_entry.get_text())
+            if not label:
                 continue
-            key = HOTKEY_KEYS[key_idx]
-            label = shortcut_label(modifier, key)
+            try:
+                modifier, key = parse_shortcut(label)
+                key_codes_for(modifier, key)
+            except (KeyError, ValueError):
+                invalid.append(label)
+                continue
+            shortcut_entry.set_text(label)
             seen[label] = seen.get(label, 0) + 1
         duplicates = [label for label, count in seen.items() if count > 1]
+        if invalid:
+            dlg = Gtk.MessageDialog(
+                transient_for=self,
+                message_type=Gtk.MessageType.WARNING,
+                buttons=Gtk.ButtonsType.OK,
+                text="Unsupported shortcuts: " + ", ".join(invalid),
+            )
+            dlg.format_secondary_text("Use Record or enter combinations such as Ctrl+Alt+Shift+2.")
+            dlg.run()
+            dlg.destroy()
+            return
         if duplicates:
             dlg = Gtk.MessageDialog(
                 transient_for=self,
@@ -4189,30 +4275,19 @@ class ShortcutConfigDialog(Gtk.Dialog):
             return
         self.response(Gtk.ResponseType.OK)
 
-    def _split_shortcut(self, shortcut: str) -> tuple[str, str]:
-        parts = [p.strip() for p in shortcut.split("+") if p.strip()]
-        if not parts:
-            return "", ""
-        key = parts[-1]
-        modifier = "+".join(parts[:-1])
-        return modifier, key
-
-    def _add_row(self, modifier: str, key: str, target: str) -> None:
+    def _add_row(self, shortcut: str, target: str) -> None:
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
 
-        modifier_combo = Gtk.ComboBoxText()
-        for opt in MODIFIER_OPTIONS:
-            modifier_combo.append_text(opt or "—")
-        active = MODIFIER_OPTIONS.index(modifier) if modifier in MODIFIER_OPTIONS else 0
-        modifier_combo.set_active(active)
+        shortcut_entry = Gtk.Entry()
+        shortcut_entry.set_text(canonical_shortcut(shortcut))
+        shortcut_entry.set_placeholder_text("Ctrl+Alt+Shift+2")
+        shortcut_entry.set_tooltip_text("Type a shortcut or use Record.")
+        shortcut_entry.set_size_request(self.SHORTCUT_WIDTH, -1)
 
-        plus_label = Gtk.Label(label="+")
-
-        key_combo = Gtk.ComboBoxText()
-        for k in HOTKEY_KEYS:
-            key_combo.append_text(k)
-        key_active = HOTKEY_KEYS.index(key) if key in HOTKEY_KEYS else 0
-        key_combo.set_active(key_active)
+        record_button = Gtk.Button(label="Record")
+        record_button.set_size_request(self.RECORD_WIDTH, -1)
+        record_button.set_tooltip_text("Record the next shortcut")
+        record_button.connect("clicked", self._on_record, shortcut_entry)
 
         target_entry = Gtk.Entry()
         target_entry.set_text(target)
@@ -4220,29 +4295,44 @@ class ShortcutConfigDialog(Gtk.Dialog):
         target_entry.set_placeholder_text("Path or link")
 
         browse_button = Gtk.Button(label="Browse")
+        browse_button.set_size_request(self.BROWSE_WIDTH, -1)
         browse_button.connect("clicked", self._on_browse, target_entry)
 
         remove_button = Gtk.Button()
+        remove_button.set_size_request(self.REMOVE_WIDTH, -1)
         remove_button.add(
             Gtk.Image.new_from_icon_name("list-remove-symbolic", Gtk.IconSize.BUTTON)
         )
         remove_button.set_tooltip_text("Remove")
-        remove_button.connect("clicked", self._on_remove, row, modifier_combo, key_combo, target_entry)
+        row_data: dict[str, Gtk.Widget] = {
+            "row": row,
+            "shortcut": shortcut_entry,
+            "target": target_entry,
+        }
+        remove_button.connect("clicked", self._on_remove, row_data)
 
-        row.pack_start(modifier_combo, False, False, 0)
-        row.pack_start(plus_label, False, False, 0)
-        row.pack_start(key_combo, False, False, 0)
+        row.pack_start(shortcut_entry, False, False, 0)
+        row.pack_start(record_button, False, False, 0)
         row.pack_start(target_entry, True, True, 0)
         row.pack_start(browse_button, False, False, 0)
         row.pack_start(remove_button, False, False, 0)
 
         self.rows_box.pack_start(row, False, False, 0)
-        self.rows.append((modifier_combo, key_combo, target_entry))
+        self.rows.append(row_data)
         row.show_all()
 
     def _on_add(self, _button: Gtk.Button) -> None:
-        self._add_row("", "F1", "")
-        self.rows[-1][2].grab_focus()
+        self._add_row("", "")
+        shortcut_entry = self.rows[-1]["shortcut"]
+        if isinstance(shortcut_entry, Gtk.Entry):
+            shortcut_entry.grab_focus()
+
+    def _on_record(self, _button: Gtk.Button, shortcut_entry: Gtk.Entry) -> None:
+        dialog = KeyComboRecorderDialog(self)
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK and dialog.combo:
+            shortcut_entry.set_text(canonical_shortcut(dialog.combo))
+        dialog.destroy()
 
     def _on_browse(self, _button: Gtk.Button, entry: Gtk.Entry) -> None:
         chooser = Gtk.FileChooserDialog(
@@ -4260,16 +4350,15 @@ class ShortcutConfigDialog(Gtk.Dialog):
     def _on_remove(
         self,
         _button: Gtk.Button,
-        row: Gtk.Box,
-        modifier_combo: Gtk.ComboBoxText,
-        key_combo: Gtk.ComboBoxText,
-        target_entry: Gtk.Entry,
+        row_data: dict[str, Gtk.Widget],
     ) -> None:
-        modifier_idx = modifier_combo.get_active()
-        modifier = MODIFIER_OPTIONS[modifier_idx] if modifier_idx >= 0 else ""
-        key_idx = key_combo.get_active()
-        key = HOTKEY_KEYS[key_idx] if key_idx >= 0 else "?"
-        label = shortcut_label(modifier, key)
+        row = row_data.get("row")
+        shortcut_entry = row_data.get("shortcut")
+        label = (
+            canonical_shortcut(shortcut_entry.get_text())
+            if isinstance(shortcut_entry, Gtk.Entry)
+            else ""
+        ) or "empty shortcut"
 
         confirm = Gtk.MessageDialog(
             transient_for=self,
@@ -4286,23 +4375,22 @@ class ShortcutConfigDialog(Gtk.Dialog):
         if response != Gtk.ResponseType.OK:
             return
 
-        self.rows_box.remove(row)
-        entry_tuple = (modifier_combo, key_combo, target_entry)
-        if entry_tuple in self.rows:
-            self.rows.remove(entry_tuple)
+        if isinstance(row, Gtk.Widget):
+            self.rows_box.remove(row)
+        if row_data in self.rows:
+            self.rows.remove(row_data)
 
     def shortcuts(self) -> dict[str, str]:
         result: dict[str, str] = {}
-        for modifier_combo, key_combo, target_entry in self.rows:
-            modifier_idx = modifier_combo.get_active()
-            modifier = MODIFIER_OPTIONS[modifier_idx] if modifier_idx >= 0 else ""
-            key_idx = key_combo.get_active()
-            if key_idx < 0:
+        for row_data in self.rows:
+            shortcut_entry = row_data["shortcut"]
+            target_entry = row_data["target"]
+            if not isinstance(shortcut_entry, Gtk.Entry) or not isinstance(target_entry, Gtk.Entry):
                 continue
-            key = HOTKEY_KEYS[key_idx]
             target = target_entry.get_text().strip()
-            if target:
-                result[shortcut_label(modifier, key)] = target
+            label = canonical_shortcut(shortcut_entry.get_text())
+            if target and label:
+                result[label] = target
         return result
 
 

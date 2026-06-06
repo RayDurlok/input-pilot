@@ -5,17 +5,20 @@
 ### Hotkeys dialog — editable shortcut list
 
 - **Replaced fixed F1–F11 grid** with a scrollable list of rows; each row has
-  its own Modifier dropdown (same options as before: `—`, Alt, Ctrl, Meta,
-  Shift, Ctrl+Alt, …) plus a Key dropdown covering F1–F12, A–Z, 0–9, and
-  navigation keys.
+  one editable shortcut field plus a path/link target.
+- **Shortcut recorder**: the Hotkeys dialog now uses the same `Record` flow as
+  Input Automation key-combo nodes. Shortcuts can also be typed manually.
+- **Flexible shortcuts**: multi-modifier combinations such as
+  `Ctrl+Alt+Shift+2` are supported, along with function keys, letters, numbers,
+  numpad digits, and common navigation keys. German-layout shifted number
+  symbols such as `"` are normalized back to their number key for recording.
+- **Aligned columns**: header labels now share the same fixed widths as the row
+  controls so `Shortcut` and `Path or link` sit over the correct fields.
 - **Add / Remove**: `Add` appends a new empty row; `Remove` (trash icon per
   row) asks for confirmation before deleting.
 - **Duplicate detection**: clicking Save checks for duplicate shortcuts and
   shows a warning listing them — saving is blocked until duplicates are
   resolved.
-- **Known regression**: the new dialog causes the tray icon to disappear from
-  the KDE system tray ~10–15 s after startup. Root cause not yet identified;
-  the old fixed-grid dialog does not trigger this. Tracked for a follow-up fix.
 
 ### Text Replacement — raw input, date format editor, special characters
 
@@ -58,6 +61,16 @@
 - **Desktop registration rename**: KDE GlobalAccel entries are now labelled
   `Run Input Pilot automation <name>` instead of
   `Run Input Pilot mousemove sequence <name>`.
+- **If blocks**: added `If` nodes with `Previous node failed`,
+  `Previous node succeeded`, and `Always` conditions. Child nodes are indented
+  below the `If` row, and drag-and-drop keeps block structure intact.
+- **Animate mouse**: normal click nodes now expose a compact mouse-icon toggle
+  that animates the pointer to the click target before clicking.
+- **Move mouse replaces click-hover**: hover-style behavior now belongs to
+  `Move mouse`; legacy `Click` + `Hover` nodes are loaded as move nodes.
+- **KWin template cache**: template matching now reads KWin `ScreenShot2` raw
+  pixel captures directly and caches verified template positions. Repeated
+  clicks first check a small cached area before falling back to a full search.
 
 ### Input Automations — UI overhaul
 

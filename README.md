@@ -17,9 +17,11 @@ Current mappings:
 - `F1` / `Help`: open `~/Downloads/`
 - `Alt+F7`: open the configured browser link
 
-The tray menu contains a configuration assistant where `F1` through `F11` can
-be mapped to either local paths or links. It also supports modifier variants
-such as `Alt+F7`, `Ctrl+F4`, `Meta+F2`, or `Shift+F9`.
+The tray menu contains a `Hotkeys...` editor where shortcuts can be mapped to
+local paths or links. Shortcuts can be typed manually or captured with the
+`Record` button. Multi-modifier shortcuts such as `Ctrl+Alt+Shift+2` are
+supported, along with function keys, letters, numbers, and common navigation
+keys. Saving checks for duplicate shortcuts before applying the new mapping.
 
 Configured shortcuts are active while the tray helper is running. Choosing
 `Beenden` in the tray menu unregisters them so the function keys return to
@@ -46,12 +48,12 @@ Install the tray autostart entry:
 ./install-tray-autostart.sh
 ```
 
-The `Button-Template klicken` tray action searches the current screen for
-`~/Desktop/buttonscreen.png` and double left-clicks the match center.
 The tray warms a small local template server so OpenCV stays loaded between
-clicks; this reduces the delay before the mouse starts moving.
-For normal clicks, KWin reports the real cursor position once, then ydotool
-moves relatively to the detected target and clicks immediately.
+template clicks. Template matching uses KWin's `ScreenShot2` API when
+available; repeated clicks on the same template first verify the last known
+position with a small cached-area screenshot before falling back to a full
+search. This keeps repeated screenshot actions fast without blindly clicking
+stale coordinates.
 `F12` is registered as an emergency stop while the tray is running; it aborts a
 running template click and releases mouse buttons if needed.
 
@@ -64,16 +66,23 @@ provides buttons to add, remove (with confirmation), and duplicate the selected
 automation. Each automation can have its own trigger hotkey. Hotkeys support
 modifiers plus function keys, letters, numbers, and common navigation keys.
 
-Each node has an action (`Click`, `Drag`, `Move mouse`, or `Input`) plus the
-source/target fields needed for that action. Sources and targets can be
+Each node has an action (`Click`, `Drag`, `Move mouse`, `Input`, or `If`) plus
+the source/target fields needed for that action. Sources and targets can be
 screenshot templates, fixed X/Y coordinates, or the previous mouse position
 captured when the automation started. Input nodes can send key combos such as
-`Ctrl+S` or type text strings. During a chain the pointer can continue from
-step to step; after the automation finishes, it returns to the original
-position. Nodes can be reordered by dragging the `⠿` handle on the left side
-of each row; row numbers update automatically. Clicking a row number opens a
-note popover — notes are stored with the automation and shown as a tooltip on
-rows that have one.
+`Ctrl+S` or type text strings. Click nodes can optionally enable the mouse-icon
+toggle to animate the pointer to the target before clicking. During a chain the
+pointer can continue from step to step; after the automation finishes, it
+returns to the original position. Nodes can be reordered by dragging the `⠿`
+handle on the left side of each row; row numbers update automatically. Clicking
+a row number opens a note popover — notes are stored with the automation and
+shown as a tooltip on rows that have one.
+
+`If` nodes act like block-coding containers. Conditions such as `Previous node
+failed`, `Previous node succeeded`, and `Always` control whether the indented
+child nodes below the `If` row run. Drag-and-drop is block-aware: moving an
+`If` row moves its children with it, and dropping nodes into a block applies the
+correct indentation.
 
 Each automation can be triggered from the command line. The `Copy trigger
 command` button in the Trigger row copies the ready-to-use command:
@@ -91,12 +100,12 @@ Automations are stored in:
 ~/.config/wayland-automation/mousemove-sequence.json
 ```
 
-For `Hover`, the wait time is used as the hover duration before the next node.
-For `Drag`, the source field is where the mouse button is pressed and the
-target field is where it is released. Drag nodes also expose `Steps`, which
-controls how many interpolated mouse movements are used between source and
-target. Enabling `Debug` on an automation shows desktop notifications for
-helpful failures such as missing source or target screenshots.
+Use `Move mouse` for hover-style pointer movement without clicking. For `Drag`,
+the source field is where the mouse button is pressed and the target field is
+where it is released. Drag nodes also expose `Steps`, which controls how many
+interpolated mouse movements are used between source and target. Enabling
+`Debug` on an automation shows desktop notifications for helpful failures such
+as missing source or target screenshots.
 
 ## Folder Templates
 
