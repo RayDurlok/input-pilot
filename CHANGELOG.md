@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Text Replacement — raw input, date format editor, special characters
+
+- **Clipboard-based paste**: replacement text is now inserted via `wl-copy` +
+  `Ctrl+V` instead of `ydotool type`. This correctly handles all special
+  characters regardless of keyboard layout (`:`, `/`, `+`, `°`, `^`, URLs, …).
+- **Clipboard restore**: the original clipboard content is saved before each
+  injection and restored 150 ms after the paste so the user's clipboard is not
+  permanently overwritten.
+- **`{enter}` token**: typing `{enter}` inside a replacement string sends
+  Shift+Enter at that position (e.g. for multi-line text in chat apps).
+- **`^` and `°` trigger detection**: `KEY_GRAVE` (physical caret key on German
+  keyboards) is now tracked — `^` without Shift and `°` with Shift — so
+  triggers like `^^.` or `°°.` are correctly detected in the buffer.
+- **Editable date formats**: the previously read-only built-in date entries
+  (`dt.`, `dt_`, `rnr.`) are now editable rows in the Textreplacement dialog.
+  Any replacement value composed of `dd`, `mm`, `yy`/`yyyy` and separators is
+  automatically treated as a date format and stored as `date_format` in JSON.
+  Custom tokens supported: `dd` (day), `mm` (month), `yyyy` / `yy` (year).
+- **No trailing space**: replacements no longer append an extra space after
+  the substituted text.
+- **Dialog buttons in one row**: Add / Remove / Cancel / Save are now all on
+  a single button bar at the bottom; dialog labels translated to English.
+
 ### Input Automations — node cards, notes, CLI trigger
 
 - **Node cards**: each node row now has a subtle background, rounded corners, and

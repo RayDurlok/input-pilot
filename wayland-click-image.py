@@ -26,6 +26,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 KWIN_CURSOR_SCRIPT = SCRIPT_DIR / "kwin-cursor-position.js"
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 TEMPLATE_IMAGE_CACHE = {}
+TEMPLATE_POSITION_CACHE = {}
 KWIN_CAPTURE_USABLE = None
 
 
@@ -91,6 +92,17 @@ def import_cv2():
             "Install/setup hint: sudo dnf install python3-opencv"
         ) from exc
     return cv2
+
+
+def import_numpy():
+    try:
+        import numpy  # type: ignore
+    except ModuleNotFoundError as exc:
+        raise SystemExit(
+            "Missing Python module: numpy\n"
+            "Install/setup hint: sudo dnf install python3-numpy"
+        ) from exc
+    return numpy
 
 
 class AutomationLock:
@@ -321,6 +333,36 @@ def move_cursor_to(
     return position
 
 
+def smooth_move_cursor_to(
+    target_x: int,
+    target_y: int,
+    socket: str | None,
+    steps: int = 50,
+    initial_position: CursorPosition | None = None,
+) -> CursorPosition:
+    position = initial_position or read_cursor_position()
+    dx = target_x - position.x
+    dy = target_y - position.y
+    if abs(dx) <= 1 and abs(dy) <= 1:
+        return position
+
+    steps = max(1, min(int(steps or 50), 200))
+    moved_x = 0
+    moved_y = 0
+    for index in range(1, steps + 1):
+        ensure_not_aborted()
+        next_x = round(dx * index / steps)
+        next_y = round(dy * index / steps)
+        step_x = next_x - moved_x
+        step_y = next_y - moved_y
+        moved_x = next_x
+        moved_y = next_y
+        if step_x or step_y:
+            run_ydotool(["mousemove", "--", str(step_x), str(step_y)], socket)
+            time.sleep(0.003)
+    return CursorPosition(target_x, target_y)
+
+
 def start_screenshot(output: Path, current_monitor: bool = False) -> subprocess.Popen:
     spectacle = require_command("spectacle", "sudo dnf install spectacle")
     command = [spectacle, "-b", "-n"]
@@ -388,6 +430,70 @@ def capture_area_with_kwin(output: Path, area: ScreenOutput) -> bool:
         os.close(fd)
 
 
+def capture_area_image_with_kwin(cv2, area: ScreenOutput):
+    global KWIN_CAPTURE_USABLE
+    if KWIN_CAPTURE_USABLE is False:
+        return None
+
+    try:
+        from gi.repository import Gio, GLib  # type: ignore
+    except (ImportError, ValueError):
+        KWIN_CAPTURE_USABLE = False
+        return None
+
+    numpy = import_numpy()
+    with tempfile.NamedTemporaryFile(prefix="input-pilot-kwin-raw-", delete=False) as handle:
+        raw_path = Path(handle.name)
+        fd = handle.fileno()
+        fd_list = Gio.UnixFDList.new()
+        fd_index = fd_list.append(fd)
+        try:
+            connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+            result = connection.call_with_unix_fd_list_sync(
+                "org.kde.KWin",
+                "/org/kde/KWin/ScreenShot2",
+                "org.kde.KWin.ScreenShot2",
+                "CaptureArea",
+                GLib.Variant(
+                    "(iiuua{sv}h)",
+                    (area.x, area.y, area.width, area.height, {}, fd_index),
+                ),
+                GLib.VariantType.new("(a{sv})"),
+                Gio.DBusCallFlags.NONE,
+                5000,
+                fd_list,
+                None,
+            )
+        except GLib.GError:
+            KWIN_CAPTURE_USABLE = False
+            raw_path.unlink(missing_ok=True)
+            return None
+
+    try:
+        return_value = result[0] if isinstance(result, tuple) else result
+        metadata = return_value.unpack()[0]
+        width = int(metadata.get("width", area.width))
+        height = int(metadata.get("height", area.height))
+        stride = int(metadata.get("stride", width * 4))
+        image_type = str(metadata.get("type", "raw"))
+        if image_type != "raw" or width <= 0 or height <= 0 or stride < width * 4:
+            KWIN_CAPTURE_USABLE = False
+            return None
+        raw = raw_path.read_bytes()
+        expected_size = stride * height
+        if len(raw) < expected_size:
+            KWIN_CAPTURE_USABLE = False
+            return None
+        rows = numpy.frombuffer(raw[:expected_size], dtype=numpy.uint8).reshape(
+            (height, stride),
+        )
+        bgra = rows[:, : width * 4].reshape((height, width, 4))
+        KWIN_CAPTURE_USABLE = True
+        return cv2.cvtColor(bgra, cv2.COLOR_BGRA2BGR)
+    finally:
+        raw_path.unlink(missing_ok=True)
+
+
 def load_template_image(cv2, template_path: Path):
     stat = template_path.stat()
     cache_key = str(template_path)
@@ -401,6 +507,11 @@ def load_template_image(cv2, template_path: Path):
         raise SystemExit(f"Could not read template image: {template_path}")
     TEMPLATE_IMAGE_CACHE[cache_key] = (cache_token, template)
     return template
+
+
+def template_cache_token(template_path: Path) -> tuple[int, int]:
+    stat = template_path.stat()
+    return stat.st_mtime_ns, stat.st_size
 
 
 def image_matches_output(
@@ -461,6 +572,112 @@ def match_template_on_screen(
     return max_score, center_x, center_y, template_w, template_h, search_scope
 
 
+def clamp_capture_area(
+    center_x: int,
+    center_y: int,
+    width: int,
+    height: int,
+    output: ScreenOutput,
+) -> ScreenOutput | None:
+    half_w = int(width / 2)
+    half_h = int(height / 2)
+    x = max(output.x, center_x - half_w)
+    y = max(output.y, center_y - half_h)
+    max_x = output.x + output.width
+    max_y = output.y + output.height
+    if x + width > max_x:
+        x = max(output.x, max_x - width)
+    if y + height > max_y:
+        y = max(output.y, max_y - height)
+    width = min(width, max_x - x)
+    height = min(height, max_y - y)
+    if width <= 0 or height <= 0:
+        return None
+    return ScreenOutput("cached-area", 0, int(x), int(y), int(width), int(height))
+
+
+def cached_template_match(
+    cv2,
+    template_path: Path,
+    template,
+    threshold: float,
+    outputs: list[ScreenOutput],
+    primary: ScreenOutput | None,
+    screen_scope: str,
+    tmp_dir: Path,
+) -> tuple[float, int, int, int, int, str, str] | None:
+    cache_key = str(template_path)
+    cache_entry = TEMPLATE_POSITION_CACHE.get(cache_key)
+    if not isinstance(cache_entry, dict):
+        return None
+    if cache_entry.get("token") != template_cache_token(template_path):
+        TEMPLATE_POSITION_CACHE.pop(cache_key, None)
+        return None
+    if cache_entry.get("screen_scope") != screen_scope:
+        return None
+
+    try:
+        cached_x = int(cache_entry["center_x"])
+        cached_y = int(cache_entry["center_y"])
+    except (KeyError, TypeError, ValueError):
+        TEMPLATE_POSITION_CACHE.pop(cache_key, None)
+        return None
+
+    template_h, template_w = template.shape[:2]
+    output = output_for_point(cached_x, cached_y, outputs) if outputs else primary
+    if not output:
+        return None
+    if screen_scope == "primary" and primary and output.name != primary.name:
+        return None
+
+    margin = max(24, int(max(template_w, template_h) * 0.35))
+    area = clamp_capture_area(
+        cached_x,
+        cached_y,
+        template_w + (margin * 2),
+        template_h + (margin * 2),
+        output,
+    )
+    if not area or area.width < template_w or area.height < template_h:
+        return None
+
+    screen = capture_area_image_with_kwin(cv2, area)
+    if screen is None:
+        return None
+
+    result = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
+    _, max_score, _, max_loc = cv2.minMaxLoc(result)
+    if max_score < threshold:
+        return None
+
+    center_x = int(area.x + max_loc[0] + template_w / 2)
+    center_y = int(area.y + max_loc[1] + template_h / 2)
+    return (
+        max_score,
+        center_x,
+        center_y,
+        template_w,
+        template_h,
+        f"cached-area:{output.name}",
+        "kwin-cache",
+    )
+
+
+def update_template_position_cache(
+    template_path: Path,
+    screen_scope: str,
+    center_x: int,
+    center_y: int,
+) -> None:
+    TEMPLATE_POSITION_CACHE[str(template_path)] = {
+        "token": template_cache_token(template_path),
+        "screen_scope": screen_scope,
+        "center_x": int(center_x),
+        "center_y": int(center_y),
+        "updated_at": time.monotonic(),
+    }
+
+
 def click_at(
     x: int,
     y: int,
@@ -470,17 +687,28 @@ def click_at(
     button_code: str = "0xC0",
     return_cursor: bool = True,
     hold_seconds: float = 0.0,
+    animate_mouse: bool = False,
+    mouse_steps: int = 50,
 ) -> CursorPosition:
     original_position = read_cursor_position()
     if repeat <= 0:
         ensure_not_aborted()
-        final_position = move_cursor_to(
-            x,
-            y,
-            socket,
-            verify=True,
-            initial_position=original_position,
-        )
+        if animate_mouse:
+            final_position = smooth_move_cursor_to(
+                x,
+                y,
+                socket,
+                steps=mouse_steps,
+                initial_position=original_position,
+            )
+        else:
+            final_position = move_cursor_to(
+                x,
+                y,
+                socket,
+                verify=True,
+                initial_position=original_position,
+            )
         if hold_seconds > 0:
             run_ydotool(["mousemove", "--", "1", "0"], socket)
             run_ydotool(["mousemove", "--", "-1", "0"], socket)
@@ -497,13 +725,22 @@ def click_at(
 
     final_position = original_position
     try:
-        final_position = move_cursor_to(
-            x,
-            y,
-            socket,
-            verify=False,
-            initial_position=original_position,
-        )
+        if animate_mouse:
+            final_position = smooth_move_cursor_to(
+                x,
+                y,
+                socket,
+                steps=mouse_steps,
+                initial_position=original_position,
+            )
+        else:
+            final_position = move_cursor_to(
+                x,
+                y,
+                socket,
+                verify=False,
+                initial_position=original_position,
+            )
 
         ensure_not_aborted()
         if repeat == 1:
@@ -586,6 +823,17 @@ def parse_args() -> argparse.Namespace:
         help="Seconds to hold the pointer at the target before returning.",
     )
     parser.add_argument(
+        "--animate-mouse",
+        action="store_true",
+        help="Move the pointer smoothly to the target before clicking.",
+    )
+    parser.add_argument(
+        "--mouse-steps",
+        type=int,
+        default=50,
+        help="Number of smooth pointer movement steps (default: 50).",
+    )
+    parser.add_argument(
         "--debug-image",
         help="Optional path to save the full screenshot used for matching",
     )
@@ -628,81 +876,71 @@ def run_template_action(args: argparse.Namespace, cv2=None) -> TemplateActionRes
         AutomationLock(),
         tempfile.TemporaryDirectory(prefix="wayland-click-image-") as tmp_dir,
     ):
-        outputs = read_screen_outputs() if args.screen_scope == "primary" else []
+        tmp_path = Path(tmp_dir)
+        outputs = read_screen_outputs()
         primary = primary_output(outputs)
-        screenshot_path = Path(tmp_dir) / "screen.png"
-        use_current_monitor_fast_path = args.screen_scope == "primary" and primary
-        kwin_capture = bool(
-            use_current_monitor_fast_path
-            and capture_area_with_kwin(screenshot_path, primary)
-        )
-        screenshot_process = None
-        if not kwin_capture:
-            screenshot_process = start_screenshot(
-                screenshot_path,
-                current_monitor=bool(use_current_monitor_fast_path),
-            )
-        capture_source = (
-            "kwin-area"
-            if kwin_capture
-            else "spectacle-current"
-            if use_current_monitor_fast_path
-            else "spectacle-full"
-        )
         cv2 = cv2 or import_cv2()
-        if screenshot_process:
-            wait_for_screenshot(screenshot_process)
-        screen = cv2.imread(str(screenshot_path), cv2.IMREAD_COLOR)
-        if screen is None and kwin_capture:
-            KWIN_CAPTURE_USABLE = False
+        template = load_template_image(cv2, template_path)
+
+        cached_match = None
+        if not args.debug_image:
+            cached_match = cached_template_match(
+                cv2,
+                template_path,
+                template,
+                args.threshold,
+                outputs,
+                primary,
+                args.screen_scope,
+                tmp_path,
+            )
+
+        if cached_match:
+            (
+                max_score,
+                center_x,
+                center_y,
+                template_w,
+                template_h,
+                search_scope,
+                capture_source,
+            ) = cached_match
+        else:
+            screenshot_path = tmp_path / "screen.png"
+            use_current_monitor_fast_path = args.screen_scope == "primary" and primary
             kwin_capture = False
+            screen = None
+            if use_current_monitor_fast_path and not args.debug_image:
+                screen = capture_area_image_with_kwin(cv2, primary)
+                kwin_capture = screen is not None
+            screenshot_process = None
+            if not kwin_capture:
+                screenshot_process = start_screenshot(
+                    screenshot_path,
+                    current_monitor=bool(use_current_monitor_fast_path),
+                )
             capture_source = (
-                "spectacle-current"
+                "kwin-area"
+                if kwin_capture
+                else "spectacle-current"
                 if use_current_monitor_fast_path
                 else "spectacle-full"
             )
-            screenshot_process = start_screenshot(
-                screenshot_path,
-                current_monitor=bool(use_current_monitor_fast_path),
-            )
-            wait_for_screenshot(screenshot_process)
-            screen = cv2.imread(str(screenshot_path), cv2.IMREAD_COLOR)
-        if screen is None:
-            raise SystemExit(f"Could not read screenshot: {screenshot_path}")
-        template = load_template_image(cv2, template_path)
-
-        if args.debug_image:
-            debug_path = Path(args.debug_image).expanduser()
-            debug_path.parent.mkdir(parents=True, exist_ok=True)
-            debug_path.write_bytes(screenshot_path.read_bytes())
-
-        current_monitor_image = bool(
-            (kwin_capture or use_current_monitor_fast_path)
-            and image_matches_output(screen, primary)
-        )
-        max_score, center_x, center_y, template_w, template_h, search_scope = (
-            match_template_on_screen(
-                cv2,
-                screen,
-                template,
-                args.screen_scope,
-                primary,
-                current_monitor_image=current_monitor_image,
-            )
-        )
-        if (
-            args.screen_scope == "primary"
-            and use_current_monitor_fast_path
-            and max_score < args.threshold
-        ):
-            screenshot_process = start_screenshot(screenshot_path, current_monitor=False)
-            capture_source = "spectacle-full"
-            wait_for_screenshot(screenshot_process)
-            screen = cv2.imread(str(screenshot_path), cv2.IMREAD_COLOR)
+            if screenshot_process:
+                wait_for_screenshot(screenshot_process)
+                screen = cv2.imread(str(screenshot_path), cv2.IMREAD_COLOR)
             if screen is None:
                 raise SystemExit(f"Could not read screenshot: {screenshot_path}")
+
             if args.debug_image:
+                debug_path = Path(args.debug_image).expanduser()
+                debug_path.parent.mkdir(parents=True, exist_ok=True)
                 debug_path.write_bytes(screenshot_path.read_bytes())
+
+            current_monitor_image = bool(
+                (kwin_capture or use_current_monitor_fast_path)
+                and image_matches_output(screen, primary)
+            )
             max_score, center_x, center_y, template_w, template_h, search_scope = (
                 match_template_on_screen(
                     cv2,
@@ -710,9 +948,32 @@ def run_template_action(args: argparse.Namespace, cv2=None) -> TemplateActionRes
                     template,
                     args.screen_scope,
                     primary,
-                    current_monitor_image=False,
+                    current_monitor_image=current_monitor_image,
                 )
             )
+            if (
+                args.screen_scope == "primary"
+                and use_current_monitor_fast_path
+                and max_score < args.threshold
+            ):
+                screenshot_process = start_screenshot(screenshot_path, current_monitor=False)
+                capture_source = "spectacle-full"
+                wait_for_screenshot(screenshot_process)
+                screen = cv2.imread(str(screenshot_path), cv2.IMREAD_COLOR)
+                if screen is None:
+                    raise SystemExit(f"Could not read screenshot: {screenshot_path}")
+                if args.debug_image:
+                    debug_path.write_bytes(screenshot_path.read_bytes())
+                max_score, center_x, center_y, template_w, template_h, search_scope = (
+                    match_template_on_screen(
+                        cv2,
+                        screen,
+                        template,
+                        args.screen_scope,
+                        primary,
+                        current_monitor_image=False,
+                    )
+                )
 
         click_x, click_y, coordinate_mode = click_coordinates_for_point(
             center_x,
@@ -725,6 +986,13 @@ def run_template_action(args: argparse.Namespace, cv2=None) -> TemplateActionRes
                 f"Match below threshold {args.threshold:.2f}; not clicking"
             )
 
+        update_template_position_cache(
+            template_path,
+            args.screen_scope,
+            center_x,
+            center_y,
+        )
+
         cursor_position = None
         if args.move_only:
             cursor_position = click_at(
@@ -735,6 +1003,8 @@ def run_template_action(args: argparse.Namespace, cv2=None) -> TemplateActionRes
                 next_delay_ms=args.double_click_delay,
                 return_cursor=not args.no_return_cursor,
                 hold_seconds=max(args.hold, 0.0),
+                animate_mouse=bool(args.animate_mouse),
+                mouse_steps=max(1, int(args.mouse_steps or 50)),
             )
         elif not args.dry_run:
             cursor_position = click_at(
@@ -745,6 +1015,8 @@ def run_template_action(args: argparse.Namespace, cv2=None) -> TemplateActionRes
                 next_delay_ms=args.double_click_delay,
                 button_code="0xC1" if args.button == "right" else "0xC0",
                 return_cursor=not args.no_return_cursor,
+                animate_mouse=bool(args.animate_mouse),
+                mouse_steps=max(1, int(args.mouse_steps or 50)),
             )
 
         return TemplateActionResult(

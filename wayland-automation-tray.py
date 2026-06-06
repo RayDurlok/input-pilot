@@ -8,6 +8,7 @@ import copy
 import json
 import os
 import re
+import shlex
 import signal
 import shutil
 import subprocess
@@ -44,11 +45,13 @@ ACTIVE_WINDOW_FILE = STATE_DIR / "wayland-automation/active-window.json"
 CURSOR_POSITION_FILE = STATE_DIR / "wayland-automation/cursor-position.json"
 TEXT_REPLACEMENT_PID_FILE = STATE_DIR / "wayland-automation/text-replacement.pid"
 TEXT_REPLACEMENT_LOG_FILE = STATE_DIR / "wayland-automation/text-replacement.log"
-BUILTIN_TEXT_REPLACEMENTS = [
-    ("dt.", "dd.mm.yyyy"),
-    ("dt_", "yyyy_mm_dd"),
-    ("rnr.", "yyyymmdd"),
+DEFAULT_DATE_ENTRIES: list[dict[str, object]] = [
+    {"trigger": "dt.", "date_format": "dd.mm.yyyy", "enabled": True},
+    {"trigger": "dt_", "date_format": "yyyy_mm_dd", "enabled": True},
+    {"trigger": "rnr.", "date_format": "yyyymmdd", "enabled": True},
 ]
+_DATE_FMT_CHARS_RE = re.compile(r'^(?:yyyy|yy|mm|dd|[.\-_/ ])+$')
+_DATE_FMT_TOKEN_RE = re.compile(r'yyyy|yy|mm|dd')
 OPEN_CONFIGURED_TARGET = SCRIPT_DIR / "open-configured-target.py"
 KWIN_ACTIVE_WINDOW_SCRIPT = SCRIPT_DIR / "kwin-active-window-state.js"
 KWIN_ACTIVE_WINDOW_SCRIPT_NAME = "wayland-automation-active-window-state"
@@ -390,51 +393,66 @@ def save_shortcuts(shortcuts: dict[str, str]) -> None:
         handle.write("\n")
 
 
-def load_text_replacements() -> list[dict[str, object]]:
-    if not TEXT_REPLACEMENTS_FILE.exists():
-        return []
-    try:
-        with TEXT_REPLACEMENTS_FILE.open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, json.JSONDecodeError):
-        return []
-    if not isinstance(data, list):
-        return []
+def _is_date_format(text: str) -> bool:
+    return bool(_DATE_FMT_CHARS_RE.fullmatch(text) and _DATE_FMT_TOKEN_RE.search(text))
 
-    replacements = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        trigger = str(item.get("trigger", "")).strip()
-        replacement = str(item.get("replacement", ""))
-        if trigger and replacement:
-            replacements.append(
-                {
-                    "trigger": trigger,
-                    "replacement": replacement,
-                    "enabled": bool(item.get("enabled", True)),
-                }
-            )
-    return replacements
+
+def load_text_replacements() -> list[dict[str, object]]:
+    raw: list[dict[str, object]] = []
+    if TEXT_REPLACEMENTS_FILE.exists():
+        try:
+            with TEXT_REPLACEMENTS_FILE.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            data = []
+        if isinstance(data, list):
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                trigger = str(item.get("trigger", "")).strip()
+                if not trigger:
+                    continue
+                if "date_format" in item:
+                    raw.append({
+                        "trigger": trigger,
+                        "date_format": str(item["date_format"]),
+                        "enabled": bool(item.get("enabled", True)),
+                    })
+                else:
+                    replacement = str(item.get("replacement", ""))
+                    if replacement:
+                        raw.append({
+                            "trigger": trigger,
+                            "replacement": replacement,
+                            "enabled": bool(item.get("enabled", True)),
+                        })
+
+    loaded_triggers = {str(r["trigger"]) for r in raw}
+    result = [dict(e) for e in DEFAULT_DATE_ENTRIES if e["trigger"] not in loaded_triggers]
+    result.extend(raw)
+    return result
 
 
 def save_text_replacements(replacements: list[dict[str, object]]) -> None:
     TEXT_REPLACEMENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
     clean = []
-    seen = set()
+    seen: set[str] = set()
     for item in replacements:
         trigger = str(item.get("trigger", "")).strip()
-        replacement = str(item.get("replacement", ""))
-        if not trigger or not replacement or trigger in seen:
+        if not trigger or trigger in seen:
             continue
         seen.add(trigger)
-        clean.append(
-            {
-                "trigger": trigger,
-                "replacement": replacement,
-                "enabled": bool(item.get("enabled", True)),
-            }
-        )
+        if "date_format" in item:
+            fmt = str(item["date_format"])
+            clean.append({"trigger": trigger, "date_format": fmt, "enabled": bool(item.get("enabled", True))})
+        else:
+            replacement = str(item.get("replacement", ""))
+            if not replacement:
+                continue
+            if _is_date_format(replacement):
+                clean.append({"trigger": trigger, "date_format": replacement, "enabled": bool(item.get("enabled", True))})
+            else:
+                clean.append({"trigger": trigger, "replacement": replacement, "enabled": bool(item.get("enabled", True))})
     with TEXT_REPLACEMENTS_FILE.open("w", encoding="utf-8") as handle:
         json.dump(clean, handle, indent=2, ensure_ascii=False)
         handle.write("\n")
@@ -454,8 +472,15 @@ def clean_mouse_steps(data: object) -> list[dict[str, object]]:
         source_type = str(item.get("source_type", "")).strip().lower()
         target_type = str(item.get("target_type", "")).strip().lower()
         input_type = str(item.get("input_type", "")).strip().lower()
+        condition = str(item.get("condition", "")).strip().lower()
+        condition_template = str(item.get("condition_template", "")).strip()
+        animate_mouse = bool(item.get("animate_mouse", False))
         keys = str(item.get("keys", "")).strip()
         text = str(item.get("text", ""))
+        try:
+            indent = int(float(item.get("indent", 0) or 0))
+        except (TypeError, ValueError):
+            indent = 0
         try:
             x = int(float(item.get("x", 0) or 0))
             y = int(float(item.get("y", 0) or 0))
@@ -477,7 +502,10 @@ def clean_mouse_steps(data: object) -> list[dict[str, object]]:
         except (TypeError, ValueError):
             drag_steps = 2
         if not action:
-            if click in {"left", "right", "double-left", "hover"}:
+            if click == "hover":
+                action = "move"
+                target_type = "template"
+            elif click in {"left", "right", "double-left"}:
                 action = "click"
                 button = click
                 target_type = "template"
@@ -501,9 +529,15 @@ def clean_mouse_steps(data: object) -> list[dict[str, object]]:
             elif click == "text":
                 action = "input"
                 input_type = "text"
-        if action not in {"click", "drag", "move", "input"}:
+        if action not in {"click", "drag", "move", "input", "if"}:
             action = "click"
-        if button not in {"left", "right", "double-left", "hover"}:
+        if condition == "screenshot-missing":
+            condition = "previous-node-failed"
+        elif condition == "screenshot-found":
+            condition = "previous-node-succeeded"
+        if condition not in {"previous-node-failed", "previous-node-succeeded", "always"}:
+            condition = "previous-node-failed"
+        if button not in {"left", "right", "double-left"}:
             button = "left"
         if source_type not in {"template", "position", "previous-position"}:
             source_type = "template"
@@ -519,6 +553,8 @@ def clean_mouse_steps(data: object) -> list[dict[str, object]]:
             click = "previous-position" if target_type == "previous-position" else "position"
         elif action == "input":
             click = input_type
+        elif action == "if":
+            click = "if"
         valid_clicks = {
             "left",
             "right",
@@ -530,9 +566,12 @@ def clean_mouse_steps(data: object) -> list[dict[str, object]]:
             "position",
             "previous-position",
             "text",
+            "if",
         }
         has_step = False
-        if action == "input":
+        if action == "if":
+            has_step = True
+        elif action == "input":
             has_step = bool(keys) if input_type == "keys" else bool(text)
         elif action == "move":
             has_step = (
@@ -567,8 +606,12 @@ def clean_mouse_steps(data: object) -> list[dict[str, object]]:
                     "source_type": source_type,
                     "target_type": target_type,
                     "input_type": input_type,
+                    "condition": condition,
+                    "condition_template": "",
+                    "animate_mouse": animate_mouse and action == "click",
                     "keys": keys,
                     "text": text,
+                    "indent": max(0, min(indent, 8)),
                     "source_x": max(source_x, 0),
                     "source_y": max(source_y, 0),
                     "x": max(x, 0),
@@ -637,8 +680,13 @@ def load_mouse_sequence() -> list[dict[str, object]]:
 def save_mouse_config(automations: list[dict[str, object]]) -> None:
     MOUSE_SEQUENCE_FILE.parent.mkdir(parents=True, exist_ok=True)
     clean_automations = []
+    used_names: set[str] = set()
     for index, item in enumerate(automations, start=1):
-        name = str(item.get("name", "")).strip() or f"Automation {index}"
+        name = unique_automation_name(
+            str(item.get("name", "")),
+            used_names,
+            f"Automation {index}",
+        )
         shortcut = canonical_shortcut(str(item.get("shortcut", "")))
         clean_automations.append(
             {
@@ -652,6 +700,21 @@ def save_mouse_config(automations: list[dict[str, object]]) -> None:
     with MOUSE_SEQUENCE_FILE.open("w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=2, ensure_ascii=False)
         handle.write("\n")
+
+
+def unique_automation_name(
+    raw_name: str,
+    used_names: set[str],
+    fallback: str,
+) -> str:
+    base = raw_name.strip() or fallback
+    candidate = base
+    counter = 2
+    while candidate.casefold() in used_names:
+        candidate = f"{base} ({counter})"
+        counter += 1
+    used_names.add(candidate.casefold())
+    return candidate
 
 
 def default_folder_templates() -> list[dict[str, object]]:
@@ -1825,6 +1888,7 @@ class AutomationTray:
 
 
 class MousemoveConfigDialog(Gtk.Dialog):
+    MAX_BLOCK_INDENT = 8
     ROW_DND_TARGETS = [
         Gtk.TargetEntry.new("text/plain", Gtk.TargetFlags.SAME_APP, 0)
     ]
@@ -1835,7 +1899,6 @@ class MousemoveConfigDialog(Gtk.Dialog):
         ("left", "Left click"),
         ("right", "Right click"),
         ("double-left", "Double left click"),
-        ("hover", "Hover"),
         ("drag", "Drag to template"),
         ("drag-position", "Drag to mouse position"),
         ("keys", "Key combo"),
@@ -1848,12 +1911,12 @@ class MousemoveConfigDialog(Gtk.Dialog):
         ("drag", "Drag"),
         ("move", "Move mouse"),
         ("input", "Input"),
+        ("if", "If"),
     ]
     BUTTON_OPTIONS = [
         ("left", "Left click"),
         ("right", "Right click"),
         ("double-left", "Double left click"),
-        ("hover", "Hover"),
     ]
     SOURCE_OPTIONS = [
         ("template", "Screenshot"),
@@ -1868,6 +1931,11 @@ class MousemoveConfigDialog(Gtk.Dialog):
     INPUT_OPTIONS = [
         ("keys", "Key combo"),
         ("text", "Input string"),
+    ]
+    CONDITION_OPTIONS = [
+        ("previous-node-failed", "Previous node failed"),
+        ("previous-node-succeeded", "Previous node succeeded"),
+        ("always", "Always"),
     ]
 
     def __init__(self, automations: list[dict[str, object]]) -> None:
@@ -2119,6 +2187,24 @@ class MousemoveConfigDialog(Gtk.Dialog):
             .input-pilot-note-active {
                 color: @theme_selected_bg_color;
             }
+            .input-pilot-if-block-bar {
+                background-color: @theme_selected_bg_color;
+                border-radius: 2px;
+                margin: 2px 0;
+            }
+            .input-pilot-animate-toggle {
+                padding: 0;
+                min-width: 0;
+                background: transparent;
+                border: none;
+                box-shadow: none;
+            }
+            .input-pilot-animate-toggle image {
+                color: alpha(@theme_fg_color, 0.25);
+            }
+            .input-pilot-animate-toggle:checked image {
+                color: @theme_selected_bg_color;
+            }
             """
         )
         Gtk.StyleContext.add_provider_for_screen(
@@ -2132,13 +2218,18 @@ class MousemoveConfigDialog(Gtk.Dialog):
         automations: list[dict[str, object]],
     ) -> list[dict[str, object]]:
         normalized = []
+        used_names: set[str] = set()
         for index, automation in enumerate(automations, start=1):
             if not isinstance(automation, dict):
                 continue
+            name = unique_automation_name(
+                str(automation.get("name", "")),
+                used_names,
+                f"Automation {index}",
+            )
             normalized.append(
                 {
-                    "name": str(automation.get("name", "")).strip()
-                    or f"Automation {index}",
+                    "name": name,
                     "shortcut": canonical_shortcut(str(automation.get("shortcut", ""))),
                     "debug": bool(automation.get("debug", False)),
                     "steps": clean_mouse_steps(automation.get("steps", [])),
@@ -2241,9 +2332,8 @@ class MousemoveConfigDialog(Gtk.Dialog):
     def on_copy_command(self, _button: Gtk.Button) -> None:
         clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
         name = self.name_entry.get_text().strip() or f"Automation {self.current_index + 1}"
-        clipboard.set_text(
-            f"{MOUSE_SEQUENCE_RUNNER} --name \"{name}\"", -1
-        )
+        command = f"{shlex.quote(str(MOUSE_SEQUENCE_RUNNER))} --name {shlex.quote(name)}"
+        clipboard.set_text(command, -1)
 
     def collapse_sidebar(self, _button: Gtk.Button) -> None:
         self.sidebar_revealer.set_reveal_child(False)
@@ -2329,9 +2419,20 @@ class MousemoveConfigDialog(Gtk.Dialog):
             return
         # Save current state directly — avoid refresh_sidebar which rebuilds sidebar_row_events
         if self.automation_state:
+            used_names = {
+                str(item.get("name", "")).casefold()
+                for index, item in enumerate(self.automation_state)
+                if index != self.current_index and isinstance(item, dict)
+            }
+            name = unique_automation_name(
+                self.name_entry.get_text(),
+                used_names,
+                f"Automation {self.current_index + 1}",
+            )
+            if self.name_entry.get_text().strip() != name:
+                self.name_entry.set_text(name)
             self.automation_state[self.current_index] = {
-                "name": self.name_entry.get_text().strip()
-                or f"Automation {self.current_index + 1}",
+                "name": name,
                 "shortcut": self.shortcut(),
                 "debug": self.debug_check.get_active(),
                 "steps": self.steps(),
@@ -2389,6 +2490,10 @@ class MousemoveConfigDialog(Gtk.Dialog):
                         int(float(step.get("source_y", 0) or 0)),
                         int(float(step.get("drag_steps", 2) or 2)),
                         str(step.get("note", "")),
+                        int(float(step.get("indent", 0) or 0)),
+                        str(step.get("condition", "")),
+                        str(step.get("condition_template", "")),
+                        bool(step.get("animate_mouse", False)),
                     )
         if not self.rows:
             self.add_row_values("", "", "left", "", "", 0, 0, 0.0)
@@ -2398,7 +2503,18 @@ class MousemoveConfigDialog(Gtk.Dialog):
     def save_current_automation(self) -> None:
         if not self.automation_state:
             return
-        name = self.name_entry.get_text().strip() or f"Automation {self.current_index + 1}"
+        used_names = {
+            str(item.get("name", "")).casefold()
+            for index, item in enumerate(self.automation_state)
+            if index != self.current_index and isinstance(item, dict)
+        }
+        name = unique_automation_name(
+            self.name_entry.get_text(),
+            used_names,
+            f"Automation {self.current_index + 1}",
+        )
+        if self.name_entry.get_text().strip() != name:
+            self.name_entry.set_text(name)
         self.automation_state[self.current_index] = {
             "name": name,
             "shortcut": self.shortcut(),
@@ -2416,9 +2532,19 @@ class MousemoveConfigDialog(Gtk.Dialog):
 
     def add_automation(self, _button: Gtk.Button) -> None:
         self.save_current_automation()
+        used_names = {
+            str(item.get("name", "")).casefold()
+            for item in self.automation_state
+            if isinstance(item, dict)
+        }
+        name = unique_automation_name(
+            f"Automation {len(self.automation_state) + 1}",
+            used_names,
+            f"Automation {len(self.automation_state) + 1}",
+        )
         self.automation_state.append(
             {
-                "name": f"Automation {len(self.automation_state) + 1}",
+                "name": name,
                 "shortcut": "",
                 "debug": False,
                 "steps": [],
@@ -2460,7 +2586,16 @@ class MousemoveConfigDialog(Gtk.Dialog):
         self.save_current_automation()
         source = self.automation_state[self.current_index]
         duplicate = copy.deepcopy(source)
-        duplicate["name"] = f"{source.get('name', 'Automation')} (Copy)"
+        used_names = {
+            str(item.get("name", "")).casefold()
+            for item in self.automation_state
+            if isinstance(item, dict)
+        }
+        duplicate["name"] = unique_automation_name(
+            f"{source.get('name', 'Automation')} (Copy)",
+            used_names,
+            "Automation Copy",
+        )
         duplicate["shortcut"] = ""
         self.automation_state.append(duplicate)
         self.refresh_sidebar(len(self.automation_state) - 1)
@@ -2498,14 +2633,27 @@ class MousemoveConfigDialog(Gtk.Dialog):
         source_y: int = 0,
         drag_steps: int = 2,
         note: str = "",
+        indent: int = 0,
+        condition: str = "",
+        condition_template: str = "",
+        animate_mouse: bool = False,
     ) -> None:
         action = action.strip().lower()
         button = button.strip().lower()
         source_type = source_type.strip().lower()
         target_type = target_type.strip().lower()
         input_type = input_type.strip().lower()
+        condition = condition.strip().lower()
+        condition_template = condition_template.strip()
+        if condition == "screenshot-missing":
+            condition = "previous-node-failed"
+        elif condition == "screenshot-found":
+            condition = "previous-node-succeeded"
         if not action:
-            if click in {"left", "right", "double-left", "hover"}:
+            if click == "hover":
+                action = "move"
+                target_type = "template"
+            elif click in {"left", "right", "double-left"}:
                 action = "click"
                 button = click
                 target_type = "template"
@@ -2539,9 +2687,12 @@ class MousemoveConfigDialog(Gtk.Dialog):
             target_type = "template" if action in {"click", "drag"} else "position"
         if input_type not in {value for value, _label in self.INPUT_OPTIONS}:
             input_type = "keys"
+        if condition not in {value for value, _label in self.CONDITION_OPTIONS}:
+            condition = "previous-node-failed"
+        indent = max(0, min(int(indent or 0), self.MAX_BLOCK_INDENT))
         drag_steps = max(1, min(int(drag_steps or 2), 200))
         target_template = target
-        if action == "click" and target_type == "template" and not target_template:
+        if action in {"click", "move"} and target_type == "template" and not target_template:
             target_template = template
 
         row_event = Gtk.EventBox()
@@ -2554,6 +2705,8 @@ class MousemoveConfigDialog(Gtk.Dialog):
 
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         row.get_style_context().add_class("input-pilot-node-card")
+        if indent:
+            row.set_margin_left(28 * indent)
         row_event.add(row)
 
         reorder_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=15)
@@ -2589,6 +2742,27 @@ class MousemoveConfigDialog(Gtk.Dialog):
         reorder_box.pack_start(number_button, False, False, 0)
         row.pack_start(reorder_box, False, False, 0)
 
+        block_bar = Gtk.Box()
+        block_bar.set_size_request(4, -1)
+        block_bar.set_no_show_all(True)
+        block_bar.get_style_context().add_class("input-pilot-if-block-bar")
+        row.pack_start(block_bar, False, False, 0)
+        if indent:
+            block_bar.show()
+
+        animate_mouse_check = Gtk.ToggleButton()
+        animate_mouse_check.set_image(
+            Gtk.Image.new_from_icon_name("pointer-symbolic", Gtk.IconSize.BUTTON)
+        )
+        animate_mouse_check.set_always_show_image(True)
+        animate_mouse_check.set_active(bool(animate_mouse))
+        animate_mouse_check.set_tooltip_text("Move the pointer smoothly")
+        animate_mouse_check.set_relief(Gtk.ReliefStyle.NONE)
+        animate_mouse_check.set_size_request(28, -1)
+        animate_mouse_check.set_no_show_all(True)
+        animate_mouse_check.get_style_context().add_class("input-pilot-animate-toggle")
+        row.pack_start(animate_mouse_check, False, False, 0)
+
         action_combo = Gtk.ComboBoxText()
         for value, label in self.ACTION_OPTIONS:
             action_combo.append(value, label)
@@ -2599,6 +2773,30 @@ class MousemoveConfigDialog(Gtk.Dialog):
         details_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         details_box.set_hexpand(True)
         row.pack_start(details_box, True, True, 0)
+
+        condition_slot = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        condition_slot.set_hexpand(True)
+        condition_slot.set_no_show_all(True)
+        details_box.pack_start(condition_slot, True, True, 0)
+
+        condition_combo = Gtk.ComboBoxText()
+        for value, label in self.CONDITION_OPTIONS:
+            condition_combo.append(value, label)
+        condition_combo.set_active_id(condition)
+        condition_combo.set_size_request(220, -1)
+        condition_combo.set_no_show_all(True)
+        condition_slot.pack_start(condition_combo, False, False, 0)
+
+        condition_entry = Gtk.Entry()
+        condition_entry.set_text(condition_template)
+        condition_entry.set_placeholder_text("")
+        condition_entry.set_hexpand(True)
+        condition_entry.set_no_show_all(True)
+        condition_entry.connect("focus-in-event", self.select_row_by_widget)
+
+        condition_button = Gtk.Button(label="...")
+        condition_button.set_no_show_all(True)
+        condition_button.connect("clicked", self.choose_template, condition_entry)
 
         source_slot = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         source_slot.set_hexpand(True)
@@ -2612,6 +2810,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
         button_combo.set_size_request(150, -1)
         button_combo.set_no_show_all(True)
         source_slot.pack_start(button_combo, False, False, 0)
+
 
         source_type_combo = Gtk.ComboBoxText()
         for value, label in self.SOURCE_OPTIONS:
@@ -2754,14 +2953,21 @@ class MousemoveConfigDialog(Gtk.Dialog):
             "row_content": row,
             "number": number_button,
             "note_buffer": note_buffer,
+            "indent": indent,
             "handle": handle_event,
             "handle_label": handle_box,
+            "block_bar": block_bar,
             "action": action_combo,
             "details": details_box,
+            "condition_slot": condition_slot,
+            "condition": condition_combo,
+            "condition_template": condition_entry,
+            "condition_button": condition_button,
             "source_slot": source_slot,
             "to_label": to_label,
             "target_slot": target_slot,
             "button": button_combo,
+            "animate_mouse": animate_mouse_check,
             "source_type": source_type_combo,
             "target_type": target_type_combo,
             "input_type": input_type_combo,
@@ -2790,7 +2996,9 @@ class MousemoveConfigDialog(Gtk.Dialog):
         row_event.connect("drag-leave", self.on_row_drag_leave)
         row_event.connect("drag-data-received", self.on_row_drag_data_received, row_data)
         action_combo.connect("changed", self.on_click_changed, row_data)
+        condition_combo.connect("changed", self.on_click_changed, row_data)
         button_combo.connect("changed", self.on_click_changed, row_data)
+        animate_mouse_check.connect("toggled", self.select_row_by_widget)
         source_type_combo.connect("changed", self.on_click_changed, row_data)
         target_type_combo.connect("changed", self.on_click_changed, row_data)
         input_type_combo.connect("changed", self.on_click_changed, row_data)
@@ -2798,8 +3006,13 @@ class MousemoveConfigDialog(Gtk.Dialog):
             row_event,
             handle_event,
             handle_box,
+            block_bar,
             action_combo,
+            condition_combo,
+            condition_entry,
+            condition_button,
             button_combo,
+            animate_mouse_check,
             source_type_combo,
             target_type_combo,
             input_type_combo,
@@ -2867,6 +3080,61 @@ class MousemoveConfigDialog(Gtk.Dialog):
         self.rows_box.reorder_child(self.drop_indicator, 1)
         for index, row_data in enumerate(self.rows):
             self.rows_box.reorder_child(row_data["row"], index + 2)
+
+    def row_indent(self, row_data: dict[str, Gtk.Widget]) -> int:
+        try:
+            return max(0, int(row_data.get("indent", 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def row_is_if(self, row_data: dict[str, Gtk.Widget]) -> bool:
+        action_combo = row_data.get("action")
+        return isinstance(action_combo, Gtk.ComboBoxText) and action_combo.get_active_id() == "if"
+
+    def set_row_indent(self, row_data: dict[str, Gtk.Widget], indent: int) -> None:
+        indent = max(0, min(indent, self.MAX_BLOCK_INDENT))
+        row_data["indent"] = indent
+        row_content = row_data.get("row_content")
+        if isinstance(row_content, Gtk.Widget):
+            row_content.set_margin_left(28 * indent)
+        block_bar = row_data.get("block_bar")
+        if isinstance(block_bar, Gtk.Widget):
+            if indent:
+                block_bar.show()
+            else:
+                block_bar.hide()
+
+    def block_end_for_index(
+        self,
+        index: int,
+        rows: list[dict[str, Gtk.Widget]] | None = None,
+    ) -> int:
+        rows = self.rows if rows is None else rows
+        if not 0 <= index < len(rows):
+            return index
+        parent_indent = self.row_indent(rows[index])
+        end_index = index + 1
+        while end_index < len(rows) and self.row_indent(rows[end_index]) > parent_indent:
+            end_index += 1
+        return end_index
+
+    def target_indent_for_drop(
+        self,
+        target_index: int,
+        rows: list[dict[str, Gtk.Widget]],
+    ) -> int:
+        if target_index > 0:
+            previous_row = rows[target_index - 1]
+            previous_indent = self.row_indent(previous_row)
+            if self.row_is_if(previous_row):
+                return min(previous_indent + 1, self.MAX_BLOCK_INDENT)
+            if previous_indent:
+                return previous_indent
+        if target_index < len(rows):
+            current_indent = self.row_indent(rows[target_index])
+            if current_indent:
+                return current_indent
+        return 0
 
     def update_row_numbers(self) -> None:
         for index, row_data in enumerate(self.rows, start=1):
@@ -3039,13 +3307,27 @@ class MousemoveConfigDialog(Gtk.Dialog):
         if not 0 <= source_index < len(self.rows):
             return
         target_index = max(0, min(target_index, len(self.rows)))
-        row_data = self.rows.pop(source_index)
+        source_end = (
+            self.block_end_for_index(source_index)
+            if self.row_is_if(self.rows[source_index])
+            else source_index + 1
+        )
+        if source_index < target_index < source_end:
+            return
+        moved_rows = self.rows[source_index:source_end]
+        original_indent = self.row_indent(moved_rows[0])
+        del self.rows[source_index:source_end]
         if source_index < target_index:
-            target_index -= 1
+            target_index -= len(moved_rows)
         target_index = max(0, min(target_index, len(self.rows)))
-        self.rows.insert(target_index, row_data)
+        target_indent = self.target_indent_for_drop(target_index, self.rows)
+        indent_delta = target_indent - original_indent
+        for row_data in moved_rows:
+            self.set_row_indent(row_data, self.row_indent(row_data) + indent_delta)
+        for offset, row_data in enumerate(moved_rows):
+            self.rows.insert(target_index + offset, row_data)
         self.sync_row_widget_order()
-        self.selected_row = row_data
+        self.selected_row = moved_rows[0]
         self.update_row_numbers()
 
     def on_click_changed(
@@ -3059,6 +3341,11 @@ class MousemoveConfigDialog(Gtk.Dialog):
     def update_target_visibility(self, row_data: dict[str, Gtk.Widget]) -> None:
         action_combo = row_data.get("action")
         button_combo = row_data.get("button")
+        animate_mouse_check = row_data.get("animate_mouse")
+        condition_slot = row_data.get("condition_slot")
+        condition_combo = row_data.get("condition")
+        condition_entry = row_data.get("condition_template")
+        condition_button = row_data.get("condition_button")
         source_slot = row_data.get("source_slot")
         to_label = row_data.get("to_label")
         target_slot = row_data.get("target_slot")
@@ -3097,6 +3384,10 @@ class MousemoveConfigDialog(Gtk.Dialog):
             else "keys"
         )
         for widget in (
+            condition_slot,
+            condition_combo,
+            condition_entry,
+            condition_button,
             source_slot,
             to_label,
             target_slot,
@@ -3121,8 +3412,13 @@ class MousemoveConfigDialog(Gtk.Dialog):
             if isinstance(widget, Gtk.Widget):
                 widget.hide()
 
+        if action in {"click", "drag", "move"}:
+            if isinstance(animate_mouse_check, Gtk.Widget):
+                animate_mouse_check.show()
+
         if action == "click":
-            if isinstance(source_slot, Gtk.Widget):
+            if isinstance(source_slot, Gtk.Box):
+                source_slot.set_hexpand(True)
                 source_slot.show()
             if isinstance(target_slot, Gtk.Widget):
                 target_slot.show()
@@ -3131,7 +3427,8 @@ class MousemoveConfigDialog(Gtk.Dialog):
             if isinstance(target_type_combo, Gtk.Widget):
                 target_type_combo.show()
         elif action == "drag":
-            if isinstance(source_slot, Gtk.Widget):
+            if isinstance(source_slot, Gtk.Box):
+                source_slot.set_hexpand(True)
                 source_slot.show()
             if isinstance(to_label, Gtk.Widget):
                 to_label.show()
@@ -3151,6 +3448,10 @@ class MousemoveConfigDialog(Gtk.Dialog):
                 source_slot.show()
             if isinstance(input_type_combo, Gtk.Widget):
                 input_type_combo.show()
+        elif action == "if":
+            for widget in (condition_slot, condition_combo):
+                if isinstance(widget, Gtk.Widget):
+                    widget.show()
 
         if action == "drag" and source_type == "template":
             for widget in (template_entry, template_button):
@@ -3213,8 +3514,25 @@ class MousemoveConfigDialog(Gtk.Dialog):
         dialog.destroy()
 
     def add_row(self, _button: Gtk.Button) -> None:
-        self.add_row_values("", "", "left", "", "", 0, 0, 0.0)
-        action_combo = self.rows[-1]["action"]
+        insert_after = self.selected_row if self.selected_row in self.rows else None
+        indent = 0
+        if insert_after is not None:
+            selected_action = insert_after.get("action")
+            selected_indent = int(insert_after.get("indent", 0) or 0)
+            if isinstance(selected_action, Gtk.ComboBoxText) and selected_action.get_active_id() == "if":
+                indent = min(selected_indent + 1, self.MAX_BLOCK_INDENT)
+            elif selected_indent:
+                indent = selected_indent
+
+        self.add_row_values("", "", "left", "", "", 0, 0, 0.0, indent=indent)
+        new_row = self.rows[-1]
+        if insert_after is not None and insert_after in self.rows[:-1]:
+            self.rows.pop()
+            insert_index = self.rows.index(insert_after) + 1
+            self.rows.insert(insert_index, new_row)
+            self.sync_row_widget_order()
+            self.update_row_numbers()
+        action_combo = new_row["action"]
         if isinstance(action_combo, Gtk.ComboBoxText):
             action_combo.grab_focus()
 
@@ -3296,9 +3614,11 @@ class MousemoveConfigDialog(Gtk.Dialog):
             drag_steps_spin = row["drag_steps"]
             action_combo = row["action"]
             button_combo = row["button"]
+            animate_mouse_check = row["animate_mouse"]
             source_type_combo = row["source_type"]
             target_type_combo = row["target_type"]
             input_type_combo = row["input_type"]
+            condition_combo = row["condition"]
             wait_spin = row["wait"]
             if not (
                 isinstance(template_entry, Gtk.Entry)
@@ -3312,9 +3632,11 @@ class MousemoveConfigDialog(Gtk.Dialog):
                 and isinstance(drag_steps_spin, Gtk.SpinButton)
                 and isinstance(action_combo, Gtk.ComboBoxText)
                 and isinstance(button_combo, Gtk.ComboBoxText)
+                and isinstance(animate_mouse_check, Gtk.ToggleButton)
                 and isinstance(source_type_combo, Gtk.ComboBoxText)
                 and isinstance(target_type_combo, Gtk.ComboBoxText)
                 and isinstance(input_type_combo, Gtk.ComboBoxText)
+                and isinstance(condition_combo, Gtk.ComboBoxText)
                 and isinstance(wait_spin, Gtk.SpinButton)
             ):
                 continue
@@ -3323,6 +3645,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
             source_type = source_type_combo.get_active_id() or "template"
             target_type = target_type_combo.get_active_id() or "template"
             input_type = input_type_combo.get_active_id() or "keys"
+            condition = condition_combo.get_active_id() or "previous-node-failed"
             source_template = template_entry.get_text().strip()
             target_template = target_entry.get_text().strip()
             keys = keys_entry.get_text().strip()
@@ -3358,6 +3681,10 @@ class MousemoveConfigDialog(Gtk.Dialog):
                     continue
                 if input_type == "text" and not text:
                     continue
+            elif action == "if":
+                click = "if"
+                template = ""
+                target = ""
             note_buf = row.get("note_buffer")
             note = ""
             if isinstance(note_buf, Gtk.TextBuffer):
@@ -3371,8 +3698,13 @@ class MousemoveConfigDialog(Gtk.Dialog):
                     "source_type": source_type,
                     "target_type": target_type,
                     "input_type": input_type,
+                    "condition": condition,
+                    "condition_template": "",
+                    "animate_mouse": animate_mouse_check.get_active()
+                    and action in {"click", "drag", "move"},
                     "keys": keys,
                     "text": text,
+                    "indent": int(row.get("indent", 0) or 0),
                     "source_x": source_x_spin.get_value_as_int(),
                     "source_y": source_y_spin.get_value_as_int(),
                     "x": x_spin.get_value_as_int(),
@@ -3659,8 +3991,6 @@ class TextReplacementDialog(Gtk.Dialog):
         self.set_border_width(10)
         self.rows: list[tuple[Gtk.Entry, Gtk.Entry]] = []
         self.selected_row: tuple[Gtk.Entry, Gtk.Entry] | None = None
-        self.add_button("Abbrechen", Gtk.ResponseType.CANCEL)
-        self.add_button("Speichern", Gtk.ResponseType.OK)
 
         content = self.get_content_area()
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -3679,20 +4009,17 @@ class TextReplacementDialog(Gtk.Dialog):
         input_header = Gtk.Label(label="Input")
         input_header.set_xalign(0)
         input_header.set_hexpand(True)
-        replacement_header = Gtk.Label(label="Replacement")
+        replacement_header = Gtk.Label(label="Replacement / date format (e.g. dd.mm.yyyy)")
         replacement_header.set_xalign(0)
         replacement_header.set_hexpand(True)
         header.pack_start(input_header, True, True, 0)
         header.pack_start(replacement_header, True, True, 0)
         self.rows_box.pack_start(header, False, False, 0)
 
-        self.add_builtin_rows()
-
         for item in replacements:
-            self.add_row_values(
-                str(item.get("trigger", "")),
-                str(item.get("replacement", "")),
-            )
+            trigger = str(item.get("trigger", ""))
+            display = str(item.get("date_format", "") or item.get("replacement", ""))
+            self.add_row_values(trigger, display)
         if not replacements:
             self.add_row_values("", "")
 
@@ -3707,32 +4034,19 @@ class TextReplacementDialog(Gtk.Dialog):
         remove_button.connect("clicked", self.remove_selected_row)
         buttons.pack_start(remove_button, False, False, 0)
 
+        spacer = Gtk.Label()
+        buttons.pack_start(spacer, True, True, 0)
+
+        cancel_button = Gtk.Button(label="Cancel")
+        cancel_button.connect("clicked", lambda _: self.response(Gtk.ResponseType.CANCEL))
+        buttons.pack_start(cancel_button, False, False, 0)
+
+        save_button = Gtk.Button(label="Save")
+        save_button.connect("clicked", lambda _: self.response(Gtk.ResponseType.OK))
+        save_button.get_style_context().add_class("suggested-action")
+        buttons.pack_start(save_button, False, False, 0)
+
         self.show_all()
-
-    def add_builtin_rows(self) -> None:
-        label = Gtk.Label(label="Built-ins")
-        label.set_xalign(0)
-        self.rows_box.pack_start(label, False, False, 0)
-        for trigger, replacement in BUILTIN_TEXT_REPLACEMENTS:
-            self.add_readonly_row(trigger, replacement)
-
-    def add_readonly_row(self, trigger: str, replacement: str) -> None:
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        trigger_entry = Gtk.Entry()
-        trigger_entry.set_text(trigger)
-        trigger_entry.set_hexpand(True)
-        trigger_entry.set_editable(False)
-        trigger_entry.set_sensitive(False)
-
-        replacement_entry = Gtk.Entry()
-        replacement_entry.set_text(replacement)
-        replacement_entry.set_hexpand(True)
-        replacement_entry.set_editable(False)
-        replacement_entry.set_sensitive(False)
-
-        row.pack_start(trigger_entry, True, True, 0)
-        row.pack_start(replacement_entry, True, True, 0)
-        self.rows_box.pack_start(row, False, False, 0)
 
     def add_row_values(self, trigger: str, replacement: str) -> None:
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -3744,7 +4058,7 @@ class TextReplacementDialog(Gtk.Dialog):
         replacement_entry = Gtk.Entry()
         replacement_entry.set_text(replacement)
         replacement_entry.set_hexpand(True)
-        replacement_entry.set_placeholder_text("Replace with")
+        replacement_entry.set_placeholder_text("Replace with or dd.mm.yyyy")
         trigger_entry.connect("focus-in-event", self.select_row, trigger_entry, replacement_entry)
         replacement_entry.connect("focus-in-event", self.select_row, trigger_entry, replacement_entry)
 
@@ -3785,13 +4099,7 @@ class TextReplacementDialog(Gtk.Dialog):
             trigger = trigger_entry.get_text().strip()
             replacement = replacement_entry.get_text()
             if trigger and replacement:
-                replacements.append(
-                    {
-                        "trigger": trigger,
-                        "replacement": replacement,
-                        "enabled": True,
-                    }
-                )
+                replacements.append({"trigger": trigger, "replacement": replacement, "enabled": True})
         return replacements
 
 

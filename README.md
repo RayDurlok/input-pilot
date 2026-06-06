@@ -162,14 +162,30 @@ Example:
 ]
 ```
 
-Typing `ct.` followed by space replaces it with `ChatGPT `. On Wayland this
+Typing `ct.` followed by space replaces it with `ChatGPT`. On Wayland this
 requires low-level read access to keyboard events in `/dev/input`.
 
-Built-in dynamic replacements:
+Replacement text is inserted via clipboard paste (`wl-copy` + `Ctrl+V`) so all
+Unicode characters and special symbols work correctly regardless of the active
+keyboard layout. The original clipboard content is restored after each
+injection.
 
-- `dt.` + space: current date as `dd.mm.yyyy`
-- `dt_` + space: current date as `yyyy_mm_dd`
-- `rnr.` + space: current date as `yyyymmdd`
+Use `{enter}` anywhere in a replacement string to send Shift+Enter at that
+position (useful for line breaks in chat applications).
+
+Date format replacements use `dd`, `mm`, `yy`, and `yyyy` tokens:
+
+```json
+[
+  { "trigger": "dt.", "date_format": "dd.mm.yyyy", "enabled": true },
+  { "trigger": "dt_", "date_format": "yyyy_mm_dd", "enabled": true },
+  { "trigger": "rnr.", "date_format": "yyyymmdd",  "enabled": true }
+]
+```
+
+These entries are editable in the `Textreplacement...` dialog. Any replacement
+value that consists only of `dd`/`mm`/`yy`/`yyyy` tokens and separator
+characters (`.` `-` `_` `/`) is automatically stored as a date format.
 
 Internally, `dt-` and `dt/` are accepted as aliases for `dt_` to handle
 keyboard layouts that report the underscore key as shifted punctuation.

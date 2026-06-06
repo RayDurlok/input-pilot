@@ -10,7 +10,6 @@ import os
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 from argparse import Namespace
 from pathlib import Path
@@ -108,6 +107,8 @@ def request_args_from_payload(payload: dict) -> Namespace:
         button=payload.get("button", "left"),
         no_return_cursor=bool(payload.get("no_return_cursor", False)),
         hold=float(payload.get("hold", 0.0)),
+        animate_mouse=bool(payload.get("animate_mouse", False)),
+        mouse_steps=int(payload.get("mouse_steps", 50)),
         debug_image=payload.get("debug_image"),
         ydotool_socket=payload.get("ydotool_socket"),
         coordinate_mode=payload.get("coordinate_mode", "global"),
@@ -148,12 +149,9 @@ def serve() -> int:
     outputs = click_module.read_screen_outputs()
     primary = click_module.primary_output(outputs)
     if primary:
-        with tempfile.TemporaryDirectory(prefix="input-pilot-kwin-probe-") as tmp_dir:
-            probe = Path(tmp_dir) / "probe.png"
-            if click_module.capture_area_with_kwin(probe, primary):
-                image = cv2.imread(str(probe), cv2.IMREAD_COLOR)
-                if image is None:
-                    click_module.KWIN_CAPTURE_USABLE = False
+        image = click_module.capture_area_image_with_kwin(cv2, primary)
+        if image is None:
+            click_module.KWIN_CAPTURE_USABLE = False
     log(f"template server started kwin_capture={click_module.KWIN_CAPTURE_USABLE}")
 
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
@@ -194,6 +192,9 @@ def fallback_click(args: argparse.Namespace) -> int:
         command.append("--no-return-cursor")
     if args.hold:
         command.extend(["--hold", str(args.hold)])
+    if args.animate_mouse:
+        command.append("--animate-mouse")
+        command.extend(["--mouse-steps", str(args.mouse_steps)])
     command.extend(["--double-click-delay", str(args.double_click_delay)])
     if args.ydotool_socket:
         command.extend(["--ydotool-socket", args.ydotool_socket])
@@ -224,6 +225,8 @@ def client(args: argparse.Namespace) -> int:
         "button": args.button,
         "no_return_cursor": args.no_return_cursor,
         "hold": args.hold,
+        "animate_mouse": args.animate_mouse,
+        "mouse_steps": args.mouse_steps,
         "ydotool_socket": args.ydotool_socket,
         "coordinate_mode": args.coordinate_mode,
         "screen_scope": args.screen_scope,
@@ -260,6 +263,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--button", choices=("left", "right"), default="left")
     parser.add_argument("--no-return-cursor", action="store_true")
     parser.add_argument("--hold", type=float, default=0.0)
+    parser.add_argument("--animate-mouse", action="store_true")
+    parser.add_argument("--mouse-steps", type=int, default=50)
     parser.add_argument("--ydotool-socket")
     parser.add_argument("--coordinate-mode", choices=("output-local", "global"), default="global")
     parser.add_argument("--screen-scope", choices=("primary", "all"), default="primary")

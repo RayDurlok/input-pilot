@@ -227,6 +227,9 @@ def step_command(step: dict[str, object], ydotool_socket: str | None) -> list[st
     else:
         raise SystemExit(f"Unknown click type: {click}")
 
+    if bool(step.get("animate_mouse", False)):
+        command.extend(["--animate-mouse", "--mouse-steps", "50"])
+
     if ydotool_socket:
         command.extend(["--ydotool-socket", ydotool_socket])
     return command
@@ -578,6 +581,20 @@ def run_model_step(
         return 0
 
     if action == "move":
+        target_type = str(step.get("target_type", "template")).strip().lower()
+        if target_type == "template":
+            template = (
+                str(step.get("target", "")).strip()
+                or str(step.get("template", "")).strip()
+            )
+            wait_seconds = max(float(step.get("wait", 0.0) or 0.0), 0.25)
+            legacy_step = dict(step, template=template, click="hover", wait=wait_seconds)
+            result = run_template_command(
+                step_command(legacy_step, ydotool_socket),
+                debug,
+                "Screenshot couldn't be found on screen.",
+            )
+            return result.returncode
         return move_to_step_position(
             step,
             "target",
@@ -621,6 +638,8 @@ def run_model_step(
             repeat=2 if button == "double-left" else 1,
             button_code="0xC1" if button == "right" else "0xC0",
             return_cursor=False,
+            animate_mouse=bool(step.get("animate_mouse", False)) and button != "hover",
+            mouse_steps=50,
         )
         return 0
 
@@ -683,6 +702,240 @@ def run_model_step(
     raise SystemExit(f"Unknown automation action: {action}")
 
 
+def step_indent(step: dict[str, object]) -> int:
+    try:
+        return max(0, int(float(step.get("indent", 0) or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def block_end_index(
+    steps: list[dict[str, object]],
+    start_index: int,
+    parent_indent: int,
+) -> int:
+    index = start_index
+    while index < len(steps) and step_indent(steps[index]) > parent_indent:
+        index += 1
+    return index
+
+
+def evaluate_if_condition(
+    step: dict[str, object],
+    state: dict[str, object],
+) -> bool:
+    condition = str(step.get("condition", "previous-node-failed")).strip().lower()
+    if condition == "screenshot-missing":
+        condition = "previous-node-failed"
+    elif condition == "screenshot-found":
+        condition = "previous-node-succeeded"
+    last_step_success = bool(state.get("last_step_success", True))
+    if condition == "always":
+        return True
+    if condition == "previous-node-succeeded":
+        return last_step_success
+    return not last_step_success
+
+
+def next_step_handles_failure(
+    steps: list[dict[str, object]],
+    current_index: int,
+    expected_indent: int,
+) -> bool:
+    next_index = current_index + 1
+    if next_index >= len(steps):
+        return False
+    next_step = steps[next_index]
+    if step_indent(next_step) != expected_indent:
+        return False
+    action = str(next_step.get("action", "")).strip().lower()
+    click = str(next_step.get("click", "")).strip().lower()
+    if action != "if" and click != "if":
+        return False
+    condition = str(next_step.get("condition", "previous-node-failed")).strip().lower()
+    return condition in {"previous-node-failed", "screenshot-missing"}
+
+
+def run_single_sequence_step(
+    step_index: int,
+    step: dict[str, object],
+    ydotool_socket: str | None,
+    debug: bool,
+    click_module,
+    original_position,
+) -> int:
+    action = str(step.get("action", "")).strip().lower()
+    click = str(step.get("click", "left")).strip().lower()
+    log_sequence(f"step {step_index} action={action} click={click}")
+
+    if action in {"click", "drag", "move", "input"}:
+        print(f"step {step_index}: {action}")
+        try:
+            exit_code = run_model_step(
+                step,
+                ydotool_socket,
+                debug,
+                click_module,
+                original_position,
+            )
+        except SystemExit as exc:
+            notify_debug(debug, str(exc))
+            raise
+        if exit_code != 0:
+            return exit_code
+    elif click == "drag":
+        print(f"step {step_index}: drag")
+        exit_code = run_drag_step(step, ydotool_socket, debug)
+        if exit_code != 0:
+            return exit_code
+    elif click == "drag-position":
+        print(f"step {step_index}: drag to position")
+        exit_code = run_drag_to_position_step(
+            step,
+            ydotool_socket,
+            debug,
+            click_module,
+        )
+        if exit_code != 0:
+            return exit_code
+    elif click == "keys":
+        combo = str(step.get("keys", "")).strip()
+        print(f"step {step_index}: keys {combo}")
+        try:
+            send_key_combo(combo, ydotool_socket)
+        except SystemExit as exc:
+            notify_debug(debug, str(exc))
+            raise
+    elif click == "text":
+        text = str(step.get("text", ""))
+        print(f"step {step_index}: text")
+        try:
+            type_string(text, ydotool_socket)
+        except SystemExit as exc:
+            notify_debug(debug, str(exc))
+            raise
+    elif click == "position":
+        try:
+            x = int(float(step.get("x", 0) or 0))
+            y = int(float(step.get("y", 0) or 0))
+        except (TypeError, ValueError) as exc:
+            notify_debug(debug, "Mouse position node has invalid coordinates.")
+            raise SystemExit("Mouse position node has invalid coordinates") from exc
+        print(f"step {step_index}: move {x},{y}")
+        current_position = click_module.read_cursor_position()
+        click_module.move_cursor_to(
+            x,
+            y,
+            ydotool_socket,
+            verify=False,
+            initial_position=current_position,
+        )
+    elif click == "previous-position":
+        print(f"step {step_index}: previous mouse position")
+        current_position = click_module.read_cursor_position()
+        click_module.move_cursor_to(
+            original_position.x,
+            original_position.y,
+            ydotool_socket,
+            verify=False,
+            initial_position=current_position,
+        )
+    else:
+        try:
+            command = step_command(step, ydotool_socket)
+        except SystemExit as exc:
+            notify_debug(debug, str(exc))
+            raise
+        print(f"step {step_index}: {' '.join(command)}")
+        result = run_template_command(
+            command,
+            debug,
+            "Screenshot couldn't be found on screen.",
+        )
+        if result.returncode != 0:
+            return result.returncode
+
+    button = str(step.get("button", "")).strip().lower()
+    target_type = str(step.get("target_type", "")).strip().lower()
+    if action == "move" and target_type == "template":
+        wait_seconds = 0.0
+    elif action == "click" and button == "hover" and target_type == "template":
+        wait_seconds = 0.0
+    else:
+        wait_seconds = float(step.get("wait", 0.0) or 0.0)
+    if wait_seconds > 0:
+        time.sleep(wait_seconds)
+    return 0
+
+
+def run_steps_range(
+    steps: list[dict[str, object]],
+    start_index: int,
+    end_index: int,
+    expected_indent: int,
+    ydotool_socket: str | None,
+    debug: bool,
+    click_module,
+    original_position,
+    state: dict[str, object],
+) -> int:
+    index = start_index
+    while index < end_index:
+        step = steps[index]
+        indent = step_indent(step)
+        if indent < expected_indent:
+            break
+        if indent > expected_indent:
+            index += 1
+            continue
+
+        action = str(step.get("action", "")).strip().lower()
+        click = str(step.get("click", "left")).strip().lower()
+        if action == "if" or click == "if":
+            child_start = index + 1
+            child_end = block_end_index(steps, child_start, indent)
+            condition_matches = evaluate_if_condition(step, state)
+            log_sequence(
+                f"step {index + 1} if condition_matches={condition_matches} "
+                f"children={child_end - child_start}"
+            )
+            print(f"step {index + 1}: if {condition_matches}")
+            if condition_matches:
+                exit_code = run_steps_range(
+                    steps,
+                    child_start,
+                    child_end,
+                    indent + 1,
+                    ydotool_socket,
+                    debug,
+                    click_module,
+                    original_position,
+                    state,
+                )
+                if exit_code != 0:
+                    return exit_code
+            index = child_end
+            continue
+
+        exit_code = run_single_sequence_step(
+            index + 1,
+            step,
+            ydotool_socket,
+            debug,
+            click_module,
+            original_position,
+        )
+        if exit_code != 0:
+            state["last_step_success"] = False
+            if next_step_handles_failure(steps, index, expected_indent):
+                index += 1
+                continue
+            return exit_code
+        state["last_step_success"] = True
+        index += 1
+    return 0
+
+
 def run_sequence(config_file: Path, ydotool_socket: str | None, index: int) -> int:
     automation = load_automation(config_file, index)
     debug = bool(automation.get("debug", False))
@@ -700,108 +953,18 @@ def run_sequence(config_file: Path, ydotool_socket: str | None, index: int) -> i
 
         click_module = load_click_module()
         original_position = click_module.read_cursor_position()
-        exit_code = 0
         try:
-            for step_index, step in enumerate(steps, start=1):
-                action = str(step.get("action", "")).strip().lower()
-                click = str(step.get("click", "left")).strip().lower()
-                log_sequence(f"step {step_index} action={action} click={click}")
-                if action in {"click", "drag", "move", "input"}:
-                    print(f"step {step_index}: {action}")
-                    try:
-                        exit_code = run_model_step(
-                            step,
-                            ydotool_socket,
-                            debug,
-                            click_module,
-                            original_position,
-                        )
-                    except SystemExit as exc:
-                        notify_debug(debug, str(exc))
-                        raise
-                    if exit_code != 0:
-                        break
-                elif click == "drag":
-                    print(f"step {step_index}: drag")
-                    exit_code = run_drag_step(step, ydotool_socket, debug)
-                    if exit_code != 0:
-                        break
-                elif click == "drag-position":
-                    print(f"step {step_index}: drag to position")
-                    exit_code = run_drag_to_position_step(
-                        step,
-                        ydotool_socket,
-                        debug,
-                        click_module,
-                    )
-                    if exit_code != 0:
-                        break
-                elif click == "keys":
-                    combo = str(step.get("keys", "")).strip()
-                    print(f"step {step_index}: keys {combo}")
-                    try:
-                        send_key_combo(combo, ydotool_socket)
-                    except SystemExit as exc:
-                        notify_debug(debug, str(exc))
-                        raise
-                elif click == "text":
-                    text = str(step.get("text", ""))
-                    print(f"step {step_index}: text")
-                    try:
-                        type_string(text, ydotool_socket)
-                    except SystemExit as exc:
-                        notify_debug(debug, str(exc))
-                        raise
-                elif click == "position":
-                    try:
-                        x = int(float(step.get("x", 0) or 0))
-                        y = int(float(step.get("y", 0) or 0))
-                    except (TypeError, ValueError) as exc:
-                        notify_debug(debug, "Mouse position node has invalid coordinates.")
-                        raise SystemExit("Mouse position node has invalid coordinates") from exc
-                    print(f"step {step_index}: move {x},{y}")
-                    current_position = click_module.read_cursor_position()
-                    click_module.move_cursor_to(
-                        x,
-                        y,
-                        ydotool_socket,
-                        verify=False,
-                        initial_position=current_position,
-                    )
-                elif click == "previous-position":
-                    print(f"step {step_index}: previous mouse position")
-                    current_position = click_module.read_cursor_position()
-                    click_module.move_cursor_to(
-                        original_position.x,
-                        original_position.y,
-                        ydotool_socket,
-                        verify=False,
-                        initial_position=current_position,
-                    )
-                else:
-                    try:
-                        command = step_command(step, ydotool_socket)
-                    except SystemExit as exc:
-                        notify_debug(debug, str(exc))
-                        raise
-                    print(f"step {step_index}: {' '.join(command)}")
-                    result = run_template_command(
-                        command,
-                        debug,
-                        "Screenshot couldn't be found on screen.",
-                    )
-                    if result.returncode != 0:
-                        exit_code = result.returncode
-                        break
-
-                button = str(step.get("button", "")).strip().lower()
-                target_type = str(step.get("target_type", "")).strip().lower()
-                if action == "click" and button == "hover" and target_type == "template":
-                    wait_seconds = 0.0
-                else:
-                    wait_seconds = float(step.get("wait", 0.0) or 0.0)
-                if wait_seconds > 0:
-                    time.sleep(wait_seconds)
+            exit_code = run_steps_range(
+                steps,
+                0,
+                len(steps),
+                0,
+                ydotool_socket,
+                debug,
+                click_module,
+                original_position,
+                {"last_step_success": True},
+            )
         finally:
             current_position = click_module.read_cursor_position()
             click_module.move_cursor_to(
@@ -822,10 +985,18 @@ def find_index_by_name(config_file: Path, name: str) -> int:
     automations = data.get("automations", []) if isinstance(data, dict) else []
     if not isinstance(automations, list):
         raise SystemExit(f"No automations list found in {config_file}")
-    name_lower = name.lower()
+    name_lower = name.strip().casefold()
+    matches = []
     for i, auto in enumerate(automations, start=1):
-        if isinstance(auto, dict) and auto.get("name", "").lower() == name_lower:
-            return i
+        if isinstance(auto, dict) and str(auto.get("name", "")).strip().casefold() == name_lower:
+            matches.append(i)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise SystemExit(
+            f"Automation name {name!r} is ambiguous; matching indexes: "
+            + ", ".join(str(index) for index in matches)
+        )
     raise SystemExit(f"No automation named {name!r} found in {config_file}")
 
 

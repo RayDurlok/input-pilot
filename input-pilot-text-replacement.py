@@ -74,10 +74,12 @@ CHAR_KEYS = {
     ecodes.KEY_MINUS: "-",
     ecodes.KEY_SLASH: "/",
     ecodes.KEY_SPACE: " ",
+    ecodes.KEY_GRAVE: "^",  # German keyboard: ^ (caret/dead circumflex)
 }
 SHIFT_CHAR_KEYS = {
     ecodes.KEY_MINUS: "_",
     ecodes.KEY_SLASH: "_",
+    ecodes.KEY_GRAVE: "°",  # German: Shift+^ = ° (degree sign)
 }
 MODIFIER_KEYS = {
     ecodes.KEY_LEFTCTRL,
@@ -193,6 +195,14 @@ DYNAMIC_REPLACEMENTS = [
 ]
 
 
+def user_format_to_strftime(fmt: str) -> str:
+    fmt = fmt.replace("yyyy", "%Y")
+    fmt = fmt.replace("yy", "%y")
+    fmt = fmt.replace("mm", "%m")
+    fmt = fmt.replace("dd", "%d")
+    return fmt
+
+
 def log(message: str) -> None:
     try:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -221,9 +231,15 @@ def load_replacements() -> list[Replacement]:
         if item.get("enabled", True) is False:
             continue
         trigger = str(item.get("trigger", "")).strip()
-        replacement = str(item.get("replacement", ""))
-        if trigger and replacement:
-            replacements.append(Replacement(trigger=trigger, replacement=replacement))
+        if not trigger:
+            continue
+        if "date_format" in item:
+            fmt = user_format_to_strftime(str(item["date_format"]))
+            replacements.append(Replacement(trigger=trigger, replacement="", date_format=fmt))
+        else:
+            replacement = str(item.get("replacement", ""))
+            if replacement:
+                replacements.append(Replacement(trigger=trigger, replacement=replacement))
     configured_triggers = {entry.trigger for entry in replacements}
     replacements.extend(
         dynamic
@@ -321,17 +337,39 @@ def run_ydotool(arguments: list[str], socket_path: str | None) -> None:
     subprocess.run([ydotool, *arguments], check=True, env=env)
 
 
-def type_text(text: str, socket_path: str | None) -> None:
-    if "_" not in text:
-        run_ydotool(["type", "--key-delay=0", "--key-hold=1", "--", text], socket_path)
-        return
+def _clipboard_paste(text: str, socket_path: str | None) -> None:
+    wl_copy = shutil.which("wl-copy")
+    if not wl_copy:
+        raise RuntimeError("wl-copy is not installed")
 
-    chunks = text.split("_")
-    for index, chunk in enumerate(chunks):
-        if chunk:
-            run_ydotool(["type", "--key-delay=0", "--key-hold=1", "--", chunk], socket_path)
-        if index < len(chunks) - 1:
-            run_ydotool(["key", "42:1", "53:1", "53:0", "42:0"], socket_path)
+    saved: bytes | None = None
+    wl_paste = shutil.which("wl-paste")
+    if wl_paste:
+        try:
+            result = subprocess.run(
+                [wl_paste, "--no-newline"], capture_output=True, timeout=0.5
+            )
+            if result.returncode == 0:
+                saved = result.stdout
+        except subprocess.TimeoutExpired:
+            pass
+
+    subprocess.run([wl_copy, "--", text], check=True)
+    # Ctrl+V: KEY_LEFTCTRL=29, KEY_V=47
+    run_ydotool(["key", "29:1", "47:1", "47:0", "29:0"], socket_path)
+
+    if saved is not None:
+        time.sleep(0.15)
+        subprocess.run([wl_copy, "--"], input=saved, check=False)
+
+
+def type_text(text: str, socket_path: str | None) -> None:
+    parts = text.split("{enter}")
+    for i, part in enumerate(parts):
+        if part:
+            _clipboard_paste(part, socket_path)
+        if i < len(parts) - 1:
+            run_ydotool(["key", "42:1", "28:1", "28:0", "42:0"], socket_path)  # Shift+Enter
 
 
 def run_mouse_automation(shortcut: MouseShortcut, socket_path: str | None) -> None:
@@ -349,7 +387,7 @@ def inject_replacement(
 ) -> None:
     for _ in range(len(trigger) + 1):
         run_ydotool(["key", "14:1", "14:0"], socket_path)
-    type_text(f"{replacement} ", socket_path)
+    type_text(replacement, socket_path)
 
 
 class ReplacementEngine:
