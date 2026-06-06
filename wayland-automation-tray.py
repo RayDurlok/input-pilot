@@ -4105,94 +4105,151 @@ class TextReplacementDialog(Gtk.Dialog):
 
 class ShortcutConfigDialog(Gtk.Dialog):
     def __init__(self, shortcuts: dict[str, str]) -> None:
-        super().__init__(title="Shortcut-Konfiguration")
-        self.set_default_size(760, 440)
+        super().__init__(title="Hotkeys")
+        self.set_default_size(820, 440)
         self.set_border_width(10)
-        self.entries: dict[str, Gtk.Entry] = {}
-        self.shortcuts_state = dict(shortcuts)
-        self.current_modifier = ""
-        self.modifier_combo = Gtk.ComboBoxText()
-        self.add_button("Abbrechen", Gtk.ResponseType.CANCEL)
-        self.add_button("Speichern", Gtk.ResponseType.OK)
+        self.rows: list[tuple[Gtk.ComboBoxText, Gtk.ComboBoxText, Gtk.Entry]] = []
 
         content = self.get_content_area()
-        top_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        top_label = Gtk.Label(label="Modifier")
-        top_label.set_xalign(0)
-        for modifier in MODIFIER_OPTIONS:
-            self.modifier_combo.append_text(modifier or "—")
-        self.modifier_combo.set_active(0)
-        self.modifier_combo.connect("changed", self.on_modifier_changed)
-        top_row.pack_start(top_label, False, False, 0)
-        top_row.pack_start(self.modifier_combo, False, False, 0)
-        content.add(top_row)
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        content.add(outer)
 
-        grid = Gtk.Grid(column_spacing=10, row_spacing=8)
-        grid.set_border_width(8)
-        content.add(grid)
-
-        key_header = Gtk.Label(label="Key")
-        key_header.set_xalign(0)
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        shortcut_header = Gtk.Label(label="Shortcut")
+        shortcut_header.set_xalign(0)
+        shortcut_header.set_width_chars(24)
         target_header = Gtk.Label(label="Path or link")
         target_header.set_xalign(0)
-        grid.attach(key_header, 0, 0, 1, 1)
-        grid.attach(target_header, 1, 0, 3, 1)
+        target_header.set_hexpand(True)
+        header.pack_start(shortcut_header, False, False, 0)
+        header.pack_start(target_header, True, True, 0)
+        outer.pack_start(header, False, False, 0)
 
-        for row, key in enumerate(FUNCTION_KEYS, start=1):
-            key_label = Gtk.Label(label=key)
-            key_label.set_xalign(0)
-            entry = Gtk.Entry()
-            entry.set_hexpand(True)
-            entry.set_text(self.shortcuts_state.get(key, ""))
-            entry.set_placeholder_text(key)
-            browse_button = Gtk.Button(label="Browse")
-            clear_button = Gtk.Button(label="Clear")
-            browse_button.connect("clicked", self.on_browse, entry)
-            clear_button.connect("clicked", self.on_clear, entry)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_hexpand(True)
+        scroller.set_vexpand(True)
+        outer.pack_start(scroller, True, True, 0)
 
-            self.entries[key] = entry
-            grid.attach(key_label, 0, row, 1, 1)
-            grid.attach(entry, 1, row, 1, 1)
-            grid.attach(browse_button, 2, row, 1, 1)
-            grid.attach(clear_button, 3, row, 1, 1)
+        self.rows_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.rows_box.set_border_width(2)
+        scroller.add(self.rows_box)
+
+        for sc, target in shortcuts.items():
+            modifier, key = self._split_shortcut(sc)
+            self._add_row(modifier, key, target)
+        if not shortcuts:
+            self._add_row("", "F1", "")
+
+        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        outer.pack_start(buttons, False, False, 0)
+
+        add_button = Gtk.Button(label="Add")
+        add_button.connect("clicked", self._on_add)
+        buttons.pack_start(add_button, False, False, 0)
+
+        spacer = Gtk.Label()
+        buttons.pack_start(spacer, True, True, 0)
+
+        cancel_button = Gtk.Button(label="Cancel")
+        cancel_button.connect("clicked", lambda _: self.response(Gtk.ResponseType.CANCEL))
+        buttons.pack_start(cancel_button, False, False, 0)
+
+        save_button = Gtk.Button(label="Save")
+        save_button.connect("clicked", self._on_save)
+        save_button.get_style_context().add_class("suggested-action")
+        buttons.pack_start(save_button, False, False, 0)
 
         self.show_all()
 
-    def selected_modifier(self) -> str:
-        index = self.modifier_combo.get_active()
-        if index < 0:
-            return ""
-        return MODIFIER_OPTIONS[index]
+    def _on_save(self, _button: Gtk.Button) -> None:
+        seen: dict[str, int] = {}
+        duplicates: list[str] = []
+        for modifier_combo, key_combo, target_entry in self.rows:
+            if not target_entry.get_text().strip():
+                continue
+            modifier_idx = modifier_combo.get_active()
+            modifier = MODIFIER_OPTIONS[modifier_idx] if modifier_idx >= 0 else ""
+            key_idx = key_combo.get_active()
+            if key_idx < 0:
+                continue
+            key = HOTKEY_KEYS[key_idx]
+            label = shortcut_label(modifier, key)
+            seen[label] = seen.get(label, 0) + 1
+        duplicates = [label for label, count in seen.items() if count > 1]
+        if duplicates:
+            dlg = Gtk.MessageDialog(
+                transient_for=self,
+                message_type=Gtk.MessageType.WARNING,
+                buttons=Gtk.ButtonsType.OK,
+                text="Duplicate shortcuts: " + ", ".join(duplicates),
+            )
+            dlg.format_secondary_text("Please remove or change the duplicates before saving.")
+            dlg.run()
+            dlg.destroy()
+            return
+        self.response(Gtk.ResponseType.OK)
 
-    def save_visible_entries(self) -> None:
-        for key, entry in self.entries.items():
-            shortcut = shortcut_label(self.current_modifier, key)
-            value = entry.get_text().strip()
-            if value:
-                self.shortcuts_state[shortcut] = value
-            else:
-                self.shortcuts_state.pop(shortcut, None)
+    def _split_shortcut(self, shortcut: str) -> tuple[str, str]:
+        parts = [p.strip() for p in shortcut.split("+") if p.strip()]
+        if not parts:
+            return "", ""
+        key = parts[-1]
+        modifier = "+".join(parts[:-1])
+        return modifier, key
 
-    def on_modifier_changed(self, _combo: Gtk.ComboBoxText) -> None:
-        self.save_visible_entries()
-        modifier = self.selected_modifier()
-        self.current_modifier = modifier
-        for key, entry in self.entries.items():
-            shortcut = shortcut_label(modifier, key)
-            entry.set_text(self.shortcuts_state.get(shortcut, ""))
-            entry.set_placeholder_text(shortcut)
+    def _add_row(self, modifier: str, key: str, target: str) -> None:
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
 
-    def on_browse(self, _button: Gtk.Button, entry: Gtk.Entry) -> None:
+        modifier_combo = Gtk.ComboBoxText()
+        for opt in MODIFIER_OPTIONS:
+            modifier_combo.append_text(opt or "—")
+        active = MODIFIER_OPTIONS.index(modifier) if modifier in MODIFIER_OPTIONS else 0
+        modifier_combo.set_active(active)
+
+        plus_label = Gtk.Label(label="+")
+
+        key_combo = Gtk.ComboBoxText()
+        for k in HOTKEY_KEYS:
+            key_combo.append_text(k)
+        key_active = HOTKEY_KEYS.index(key) if key in HOTKEY_KEYS else 0
+        key_combo.set_active(key_active)
+
+        target_entry = Gtk.Entry()
+        target_entry.set_text(target)
+        target_entry.set_hexpand(True)
+        target_entry.set_placeholder_text("Path or link")
+
+        browse_button = Gtk.Button(label="Browse")
+        browse_button.connect("clicked", self._on_browse, target_entry)
+
+        remove_button = Gtk.Button()
+        remove_button.add(
+            Gtk.Image.new_from_icon_name("list-remove-symbolic", Gtk.IconSize.BUTTON)
+        )
+        remove_button.set_tooltip_text("Remove")
+        remove_button.connect("clicked", self._on_remove, row, modifier_combo, key_combo, target_entry)
+
+        row.pack_start(modifier_combo, False, False, 0)
+        row.pack_start(plus_label, False, False, 0)
+        row.pack_start(key_combo, False, False, 0)
+        row.pack_start(target_entry, True, True, 0)
+        row.pack_start(browse_button, False, False, 0)
+        row.pack_start(remove_button, False, False, 0)
+
+        self.rows_box.pack_start(row, False, False, 0)
+        self.rows.append((modifier_combo, key_combo, target_entry))
+        row.show_all()
+
+    def _on_add(self, _button: Gtk.Button) -> None:
+        self._add_row("", "F1", "")
+        self.rows[-1][2].grab_focus()
+
+    def _on_browse(self, _button: Gtk.Button, entry: Gtk.Entry) -> None:
         chooser = Gtk.FileChooserDialog(
-            title="Pfad auswählen",
+            title="Select folder",
             parent=self,
             action=Gtk.FileChooserAction.SELECT_FOLDER,
-            buttons=(
-                "Abbrechen",
-                Gtk.ResponseType.CANCEL,
-                "Auswählen",
-                Gtk.ResponseType.OK,
-            ),
+            buttons=("Cancel", Gtk.ResponseType.CANCEL, "Select", Gtk.ResponseType.OK),
         )
         if chooser.run() == Gtk.ResponseType.OK:
             filename = chooser.get_filename()
@@ -4200,12 +4257,53 @@ class ShortcutConfigDialog(Gtk.Dialog):
                 entry.set_text(filename)
         chooser.destroy()
 
-    def on_clear(self, _button: Gtk.Button, entry: Gtk.Entry) -> None:
-        entry.set_text("")
+    def _on_remove(
+        self,
+        _button: Gtk.Button,
+        row: Gtk.Box,
+        modifier_combo: Gtk.ComboBoxText,
+        key_combo: Gtk.ComboBoxText,
+        target_entry: Gtk.Entry,
+    ) -> None:
+        modifier_idx = modifier_combo.get_active()
+        modifier = MODIFIER_OPTIONS[modifier_idx] if modifier_idx >= 0 else ""
+        key_idx = key_combo.get_active()
+        key = HOTKEY_KEYS[key_idx] if key_idx >= 0 else "?"
+        label = shortcut_label(modifier, key)
+
+        confirm = Gtk.MessageDialog(
+            transient_for=self,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.NONE,
+            text=f"Remove shortcut {label!r}?",
+        )
+        confirm.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        btn = confirm.add_button("Remove", Gtk.ResponseType.OK)
+        btn.get_style_context().add_class("destructive-action")
+        confirm.set_default_response(Gtk.ResponseType.CANCEL)
+        response = confirm.run()
+        confirm.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+
+        self.rows_box.remove(row)
+        entry_tuple = (modifier_combo, key_combo, target_entry)
+        if entry_tuple in self.rows:
+            self.rows.remove(entry_tuple)
 
     def shortcuts(self) -> dict[str, str]:
-        self.save_visible_entries()
-        return dict(self.shortcuts_state)
+        result: dict[str, str] = {}
+        for modifier_combo, key_combo, target_entry in self.rows:
+            modifier_idx = modifier_combo.get_active()
+            modifier = MODIFIER_OPTIONS[modifier_idx] if modifier_idx >= 0 else ""
+            key_idx = key_combo.get_active()
+            if key_idx < 0:
+                continue
+            key = HOTKEY_KEYS[key_idx]
+            target = target_entry.get_text().strip()
+            if target:
+                result[shortcut_label(modifier, key)] = target
+        return result
 
 
 def parse_args() -> argparse.Namespace:

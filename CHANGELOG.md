@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Hotkeys dialog — editable shortcut list
+
+- **Replaced fixed F1–F11 grid** with a scrollable list of rows; each row has
+  its own Modifier dropdown (same options as before: `—`, Alt, Ctrl, Meta,
+  Shift, Ctrl+Alt, …) plus a Key dropdown covering F1–F12, A–Z, 0–9, and
+  navigation keys.
+- **Add / Remove**: `Add` appends a new empty row; `Remove` (trash icon per
+  row) asks for confirmation before deleting.
+- **Duplicate detection**: clicking Save checks for duplicate shortcuts and
+  shows a warning listing them — saving is blocked until duplicates are
+  resolved.
+- **Known regression**: the new dialog causes the tray icon to disappear from
+  the KDE system tray ~10–15 s after startup. Root cause not yet identified;
+  the old fixed-grid dialog does not trigger this. Tracked for a follow-up fix.
+
 ### Text Replacement — raw input, date format editor, special characters
 
 - **Clipboard-based paste**: replacement text is now inserted via `wl-copy` +
