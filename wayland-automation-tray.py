@@ -575,6 +575,7 @@ def clean_mouse_steps(data: object) -> list[dict[str, object]]:
                     "y": max(y, 0),
                     "drag_steps": max(1, min(drag_steps, 200)),
                     "wait": max(wait, 0.0),
+                    "note": str(item.get("note", "")),
                 }
             )
     return steps
@@ -795,8 +796,8 @@ def write_mouse_sequence_desktop_file(index: int, name: str) -> str:
             [
                 "[Desktop Entry]",
                 "Type=Application",
-                f"Name=Run Input Pilot mousemove sequence {name}",
-                f"Comment=Run Input Pilot mousemove sequence {name}",
+                f"Name=Run Input Pilot automation {name}",
+                f"Comment=Run Input Pilot automation {name}",
                 f"Exec={command}",
                 "Icon=input-mouse",
                 "Terminal=false",
@@ -1184,7 +1185,7 @@ def register_mouse_sequence_shortcut(index: int, automation: dict[str, object]) 
         return
     modifier, function_key = parse_shortcut(shortcut)
     desktop_id = write_mouse_sequence_desktop_file(index, name)
-    shortcut_name = f"Run Input Pilot mousemove sequence {name}"
+    shortcut_name = f"Run Input Pilot automation {name}"
     codes = key_codes_for(modifier, function_key)
 
     if shutil.which("kbuildsycoca6"):
@@ -2003,6 +2004,10 @@ class MousemoveConfigDialog(Gtk.Dialog):
             self.key_combo.append_text(key)
         trigger_row.pack_start(self.key_combo, False, False, 0)
 
+        copy_command_btn = Gtk.Button(label="Copy trigger command")
+        copy_command_btn.connect("clicked", self.on_copy_command)
+        trigger_row.pack_start(copy_command_btn, False, False, 0)
+
         scroller = Gtk.ScrolledWindow()
         scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scroller.set_hexpand(True)
@@ -2099,6 +2104,20 @@ class MousemoveConfigDialog(Gtk.Dialog):
             .input-pilot-sidebar-row-selected {
                 background-color: @theme_selected_bg_color;
                 color: @theme_selected_fg_color;
+            }
+            .input-pilot-node-card {
+                background-color: @theme_base_color;
+                border-radius: 6px;
+                border: 1px solid alpha(@borders, 0.6);
+                padding: 4px 6px;
+                margin: 1px 4px;
+            }
+            .input-pilot-row-number {
+                padding: 0 2px;
+                min-width: 0;
+            }
+            .input-pilot-note-active {
+                color: @theme_selected_bg_color;
             }
             """
         )
@@ -2219,6 +2238,12 @@ class MousemoveConfigDialog(Gtk.Dialog):
             if isinstance(child, Gtk.Label):
                 child.set_text(entry.get_text() or f"Automation {self.current_index + 1}")
                 break
+    def on_copy_command(self, _button: Gtk.Button) -> None:
+        clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+        name = self.name_entry.get_text().strip() or f"Automation {self.current_index + 1}"
+        clipboard.set_text(
+            f"{MOUSE_SEQUENCE_RUNNER} --name \"{name}\"", -1
+        )
 
     def collapse_sidebar(self, _button: Gtk.Button) -> None:
         self.sidebar_revealer.set_reveal_child(False)
@@ -2363,6 +2388,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
                         int(float(step.get("source_x", 0) or 0)),
                         int(float(step.get("source_y", 0) or 0)),
                         int(float(step.get("drag_steps", 2) or 2)),
+                        str(step.get("note", "")),
                     )
         if not self.rows:
             self.add_row_values("", "", "left", "", "", 0, 0, 0.0)
@@ -2471,6 +2497,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
         source_x: int = 0,
         source_y: int = 0,
         drag_steps: int = 2,
+        note: str = "",
     ) -> None:
         action = action.strip().lower()
         button = button.strip().lower()
@@ -2526,6 +2553,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
         )
 
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        row.get_style_context().add_class("input-pilot-node-card")
         row_event.add(row)
 
         reorder_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=15)
@@ -2552,11 +2580,13 @@ class MousemoveConfigDialog(Gtk.Dialog):
         handle_event.connect("leave-notify-event", self.on_handle_leave)
         reorder_box.pack_start(handle_event, False, False, 0)
 
-        number_label = Gtk.Label(label="")
-        number_label.set_xalign(0)
-        number_label.set_size_request(24, -1)
-        number_label.get_style_context().add_class("input-pilot-row-number")
-        reorder_box.pack_start(number_label, False, False, 0)
+        note_buffer = Gtk.TextBuffer()
+        note_buffer.set_text(note)
+        number_button = Gtk.Button(label="")
+        number_button.set_relief(Gtk.ReliefStyle.NONE)
+        number_button.set_size_request(28, -1)
+        number_button.get_style_context().add_class("input-pilot-row-number")
+        reorder_box.pack_start(number_button, False, False, 0)
         row.pack_start(reorder_box, False, False, 0)
 
         action_combo = Gtk.ComboBoxText()
@@ -2722,7 +2752,8 @@ class MousemoveConfigDialog(Gtk.Dialog):
         row_data: dict[str, Gtk.Widget] = {
             "row": row_event,
             "row_content": row,
-            "number": number_label,
+            "number": number_button,
+            "note_buffer": note_buffer,
             "handle": handle_event,
             "handle_label": handle_box,
             "action": action_combo,
@@ -2751,6 +2782,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
             "delete": delete_button,
         }
         delete_button.connect("clicked", self.confirm_remove_row, row_data)
+        number_button.connect("clicked", self.on_note_clicked, row_data)
         handle_event.connect("drag-data-get", self.on_row_drag_data_get, row_data)
         handle_event.connect("drag-begin", self.on_row_drag_begin, row_data)
         handle_event.connect("drag-end", self.on_row_drag_end)
@@ -2838,9 +2870,50 @@ class MousemoveConfigDialog(Gtk.Dialog):
 
     def update_row_numbers(self) -> None:
         for index, row_data in enumerate(self.rows, start=1):
-            number_label = row_data.get("number")
-            if isinstance(number_label, Gtk.Label):
-                number_label.set_text(f"{index}.")
+            btn = row_data.get("number")
+            if not isinstance(btn, Gtk.Button):
+                continue
+            buf = row_data.get("note_buffer")
+            has_note = isinstance(buf, Gtk.TextBuffer) and buf.get_char_count() > 0
+            btn.set_label(f"{index}.")
+            ctx = btn.get_style_context()
+            if has_note:
+                ctx.add_class("input-pilot-note-active")
+                note_text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+                btn.set_tooltip_text(note_text)
+            else:
+                ctx.remove_class("input-pilot-note-active")
+                btn.set_tooltip_text("Click to add a note")
+
+    def on_note_clicked(self, button: Gtk.Button, row_data: dict) -> None:
+        buf = row_data.get("note_buffer")
+        if not isinstance(buf, Gtk.TextBuffer):
+            return
+        popover = Gtk.Popover()
+        popover.set_relative_to(button)
+        popover.set_position(Gtk.PositionType.RIGHT)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.set_border_width(10)
+
+        label = Gtk.Label(label="Note")
+        label.set_xalign(0)
+        box.pack_start(label, False, False, 0)
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_size_request(280, 90)
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        text_view = Gtk.TextView()
+        text_view.set_buffer(buf)
+        text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        text_view.set_accepts_tab(False)
+        scroll.add(text_view)
+        box.pack_start(scroll, True, True, 0)
+
+        popover.add(box)
+        popover.show_all()
+        text_view.grab_focus()
+        popover.connect("closed", lambda _p: self.update_row_numbers())
 
     def on_row_drag_data_get(
         self,
@@ -3285,6 +3358,10 @@ class MousemoveConfigDialog(Gtk.Dialog):
                     continue
                 if input_type == "text" and not text:
                     continue
+            note_buf = row.get("note_buffer")
+            note = ""
+            if isinstance(note_buf, Gtk.TextBuffer):
+                note = note_buf.get_text(note_buf.get_start_iter(), note_buf.get_end_iter(), False)
             steps.append(
                 {
                     "template": template,
@@ -3303,6 +3380,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
                     "drag_steps": drag_steps_spin.get_value_as_int(),
                     "click": click,
                     "wait": wait_spin.get_value(),
+                    "note": note,
                 }
             )
         return steps

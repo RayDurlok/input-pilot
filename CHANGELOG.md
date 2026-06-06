@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Input Automations — node cards, notes, CLI trigger
+
+- **Node cards**: each node row now has a subtle background, rounded corners, and
+  a thin border (`input-pilot-node-card` CSS class) to give visual weight to
+  individual steps.
+- **Per-node notes**: the row number is now a clickable button. Clicking it opens
+  a small popover with a text area for freeform notes. Rows with a note highlight
+  the number in the accent colour and show the note text as a tooltip. Notes are
+  persisted with the automation.
+- **`--name` CLI flag**: `input-pilot-mouse-sequence.py` now accepts
+  `--name <automation-name>` (case-insensitive) as an alternative to `--index`.
+  The two flags are mutually exclusive; omitting both defaults to index 1.
+- **Copy trigger command**: a `Copy trigger command` button in the Trigger row
+  copies the ready-to-run command (`input-pilot-mouse-sequence.py --name "…"`)
+  to the clipboard.
+- **Desktop registration rename**: KDE GlobalAccel entries are now labelled
+  `Run Input Pilot automation <name>` instead of
+  `Run Input Pilot mousemove sequence <name>`.
+
 ### Input Automations — UI overhaul
 
 - **Sidebar**: replaced the automation combo-box with a collapsible sidebar

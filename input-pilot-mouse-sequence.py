@@ -814,17 +814,39 @@ def run_sequence(config_file: Path, ydotool_socket: str | None, index: int) -> i
         return exit_code
 
 
+def find_index_by_name(config_file: Path, name: str) -> int:
+    if not config_file.exists():
+        raise SystemExit(f"Config not found: {config_file}")
+    with config_file.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    automations = data.get("automations", []) if isinstance(data, dict) else []
+    if not isinstance(automations, list):
+        raise SystemExit(f"No automations list found in {config_file}")
+    name_lower = name.lower()
+    for i, auto in enumerate(automations, start=1):
+        if isinstance(auto, dict) and auto.get("name", "").lower() == name_lower:
+            return i
+    raise SystemExit(f"No automation named {name!r} found in {config_file}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run an Input Pilot mousemove sequence")
     parser.add_argument("--config", type=Path, default=CONFIG_FILE)
     parser.add_argument("--ydotool-socket", default=DEFAULT_YDOTOOL_SOCKET)
-    parser.add_argument("--index", type=int, default=1, help="1-based automation index")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--index", type=int, default=None, help="1-based automation index")
+    group.add_argument("--name", default=None, help="automation name (case-insensitive)")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    return run_sequence(args.config.expanduser(), args.ydotool_socket, args.index)
+    config = args.config.expanduser()
+    if args.name is not None:
+        index = find_index_by_name(config, args.name)
+    else:
+        index = args.index if args.index is not None else 1
+    return run_sequence(config, args.ydotool_socket, index)
 
 
 if __name__ == "__main__":

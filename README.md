@@ -71,7 +71,19 @@ captured when the automation started. Input nodes can send key combos such as
 `Ctrl+S` or type text strings. During a chain the pointer can continue from
 step to step; after the automation finishes, it returns to the original
 position. Nodes can be reordered by dragging the `⠿` handle on the left side
-of each row; row numbers update automatically.
+of each row; row numbers update automatically. Clicking a row number opens a
+note popover — notes are stored with the automation and shown as a tooltip on
+rows that have one.
+
+Each automation can be triggered from the command line. The `Copy trigger
+command` button in the Trigger row copies the ready-to-use command:
+
+```bash
+input-pilot-mouse-sequence.py --name "My Automation"
+```
+
+The runner also accepts `--index <n>` (1-based) for positional lookup. `--name`
+and `--index` are mutually exclusive; omitting both defaults to index 1.
 
 Automations are stored in:
 
