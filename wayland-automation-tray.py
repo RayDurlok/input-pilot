@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import re
@@ -1826,6 +1827,9 @@ class MousemoveConfigDialog(Gtk.Dialog):
     ROW_DND_TARGETS = [
         Gtk.TargetEntry.new("text/plain", Gtk.TargetFlags.SAME_APP, 0)
     ]
+    SIDEBAR_DND_TARGETS = [
+        Gtk.TargetEntry.new("text/plain", Gtk.TargetFlags.SAME_APP, 1)
+    ]
     CLICK_OPTIONS = [
         ("left", "Left click"),
         ("right", "Right click"),
@@ -1867,8 +1871,8 @@ class MousemoveConfigDialog(Gtk.Dialog):
 
     def __init__(self, automations: list[dict[str, object]]) -> None:
         super().__init__(title="Input Automations")
-        self.set_default_size(1320, 620)
-        self.set_border_width(10)
+        self.set_default_size(1400, 680)
+        self.set_border_width(0)
         self.install_css()
         self.automation_state = self.normalize_automations(automations)
         self.current_index = 0
@@ -1878,40 +1882,111 @@ class MousemoveConfigDialog(Gtk.Dialog):
         self.selected_row: dict[str, Gtk.Widget] | None = None
         self.drag_source_index: int | None = None
         self.drop_index: int | None = None
+        self.sidebar_drag_source_index: int | None = None
         action_area = self.get_action_area()
         action_area.set_no_show_all(True)
         action_area.hide()
 
         content = self.get_content_area()
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        content.add(outer)
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        content.add(root)
 
-        automation_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        outer.pack_start(automation_row, False, False, 0)
+        # ── Main split: sidebar + detail ──────────────────────────
+        main_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        root.pack_start(main_hbox, True, True, 0)
 
-        automation_label = Gtk.Label(label="Automation")
-        automation_label.set_xalign(0)
-        automation_row.pack_start(automation_label, False, False, 0)
+        # ── Sidebar ───────────────────────────────────────────────
+        sidebar_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        sidebar_box.set_name("input-pilot-sidebar")
+        sidebar_box.set_size_request(210, -1)
 
-        self.automation_combo = Gtk.ComboBoxText()
-        self.automation_combo.set_size_request(220, -1)
-        self.automation_combo.connect("changed", self.on_automation_changed)
-        automation_row.pack_start(self.automation_combo, False, False, 0)
+        sidebar_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        sidebar_header.set_border_width(8)
+        sidebar_title = Gtk.Label(label="Automations")
+        sidebar_title.set_xalign(0)
+        sidebar_header.pack_start(sidebar_title, True, True, 0)
+        collapse_btn = Gtk.Button()
+        collapse_btn.add(Gtk.Image.new_from_icon_name("pan-start-symbolic", Gtk.IconSize.BUTTON))
+        collapse_btn.set_relief(Gtk.ReliefStyle.NONE)
+        collapse_btn.set_tooltip_text("Collapse sidebar")
+        collapse_btn.connect("clicked", self.collapse_sidebar)
+        sidebar_header.pack_start(collapse_btn, False, False, 0)
+        sidebar_box.pack_start(sidebar_header, False, False, 0)
+        sidebar_box.pack_start(
+            Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0
+        )
+
+        sidebar_scroller = Gtk.ScrolledWindow()
+        sidebar_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        sidebar_scroller.set_vexpand(True)
+        self.sidebar_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.sidebar_drop_indicator = Gtk.Box()
+        self.sidebar_drop_indicator.set_size_request(-1, 3)
+        self.sidebar_drop_indicator.set_name("input-pilot-drop-indicator")
+        self.sidebar_drop_indicator.set_no_show_all(True)
+        self.sidebar_list_box.pack_start(self.sidebar_drop_indicator, False, False, 0)
+        self.sidebar_drop_indicator.hide()
+        self.sidebar_row_events: list[Gtk.EventBox] = []
+        self.sidebar_drop_index: int | None = None
+        sidebar_scroller.add(self.sidebar_list_box)
+        sidebar_box.pack_start(sidebar_scroller, True, True, 0)
+
+        sidebar_box.pack_start(
+            Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0
+        )
+        sidebar_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        sidebar_actions.set_border_width(8)
+        add_automation_button = Gtk.Button()
+        add_automation_button.add(Gtk.Image.new_from_icon_name("list-add-symbolic", Gtk.IconSize.BUTTON))
+        add_automation_button.set_tooltip_text("Add automation")
+        add_automation_button.connect("clicked", self.add_automation)
+        sidebar_actions.pack_start(add_automation_button, True, True, 0)
+        remove_automation_button = Gtk.Button()
+        remove_automation_button.add(Gtk.Image.new_from_icon_name("list-remove-symbolic", Gtk.IconSize.BUTTON))
+        remove_automation_button.set_tooltip_text("Remove automation")
+        remove_automation_button.connect("clicked", self.remove_automation)
+        sidebar_actions.pack_start(remove_automation_button, True, True, 0)
+        duplicate_automation_button = Gtk.Button()
+        duplicate_automation_button.add(Gtk.Image.new_from_icon_name("edit-copy-symbolic", Gtk.IconSize.BUTTON))
+        duplicate_automation_button.set_tooltip_text("Duplicate automation")
+        duplicate_automation_button.connect("clicked", self.duplicate_automation)
+        sidebar_actions.pack_start(duplicate_automation_button, True, True, 0)
+        sidebar_box.pack_start(sidebar_actions, False, False, 0)
+
+        self.sidebar_revealer = Gtk.Revealer()
+        self.sidebar_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_RIGHT)
+        self.sidebar_revealer.set_transition_duration(150)
+        self.sidebar_revealer.set_reveal_child(True)
+        self.sidebar_revealer.add(sidebar_box)
+        main_hbox.pack_start(self.sidebar_revealer, False, False, 0)
+
+        self.sidebar_sep = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+        main_hbox.pack_start(self.sidebar_sep, False, False, 0)
+
+        # ── Detail panel ──────────────────────────────────────────
+        detail_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        detail_box.set_border_width(10)
+        main_hbox.pack_start(detail_box, True, True, 0)
+
+        name_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        detail_box.pack_start(name_row, False, False, 0)
+
+        self.expand_btn = Gtk.Button()
+        self.expand_btn.add(Gtk.Image.new_from_icon_name("pan-end-symbolic", Gtk.IconSize.BUTTON))
+        self.expand_btn.set_relief(Gtk.ReliefStyle.NONE)
+        self.expand_btn.set_tooltip_text("Expand sidebar")
+        self.expand_btn.connect("clicked", self.expand_sidebar)
+        self.expand_btn.set_no_show_all(True)
+        self.expand_btn.hide()
+        name_row.pack_start(self.expand_btn, False, False, 0)
 
         self.name_entry = Gtk.Entry()
         self.name_entry.set_placeholder_text("Name")
-        automation_row.pack_start(self.name_entry, True, True, 0)
-
-        add_automation_button = Gtk.Button(label="Automation hinzufügen")
-        add_automation_button.connect("clicked", self.add_automation)
-        automation_row.pack_start(add_automation_button, False, False, 0)
-
-        remove_automation_button = Gtk.Button(label="Automation entfernen")
-        remove_automation_button.connect("clicked", self.remove_automation)
-        automation_row.pack_start(remove_automation_button, False, False, 0)
+        self.name_entry.connect("changed", self.on_name_changed)
+        name_row.pack_start(self.name_entry, True, True, 0)
 
         trigger_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        outer.pack_start(trigger_row, False, False, 0)
+        detail_box.pack_start(trigger_row, False, False, 0)
 
         trigger_label = Gtk.Label(label="Trigger")
         trigger_label.set_xalign(0)
@@ -1919,11 +1994,11 @@ class MousemoveConfigDialog(Gtk.Dialog):
 
         self.modifier_combo = Gtk.ComboBoxText()
         for modifier_option in MODIFIER_OPTIONS:
-            self.modifier_combo.append_text(modifier_option or "Keine")
+            self.modifier_combo.append_text(modifier_option or "—")
         trigger_row.pack_start(self.modifier_combo, False, False, 0)
 
         self.key_combo = Gtk.ComboBoxText()
-        self.key_combo.append_text("Keine")
+        self.key_combo.append_text("—")
         for key in HOTKEY_KEYS:
             self.key_combo.append_text(key)
         trigger_row.pack_start(self.key_combo, False, False, 0)
@@ -1932,7 +2007,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
         scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scroller.set_hexpand(True)
         scroller.set_vexpand(True)
-        outer.pack_start(scroller, True, True, 0)
+        detail_box.pack_start(scroller, True, True, 0)
 
         self.rows_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.rows_box.set_border_width(2)
@@ -1968,7 +2043,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
         self.drop_indicator.hide()
 
         footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        outer.pack_start(footer, False, False, 0)
+        detail_box.pack_start(footer, False, False, 0)
 
         self.debug_check = Gtk.CheckButton(label="Debug")
         self.debug_check.set_tooltip_text("Show helpful notifications while running this automation")
@@ -1976,23 +2051,23 @@ class MousemoveConfigDialog(Gtk.Dialog):
 
         footer.pack_start(Gtk.Box(), True, True, 0)
 
-        cancel_button = Gtk.Button(label="Abbrechen")
+        cancel_button = Gtk.Button(label="Cancel")
         cancel_button.connect("clicked", lambda _button: self.response(Gtk.ResponseType.CANCEL))
         footer.pack_start(cancel_button, False, False, 0)
 
-        run_button = Gtk.Button(label="Ausführen")
+        run_button = Gtk.Button(label="Run")
         run_button.connect("clicked", lambda _button: self.response(Gtk.ResponseType.APPLY))
         footer.pack_start(run_button, False, False, 0)
 
-        save_button = Gtk.Button(label="Speichern")
+        save_button = Gtk.Button(label="Save")
         save_button.connect("clicked", lambda _button: self.response(Gtk.ResponseType.OK))
         footer.pack_start(save_button, False, False, 0)
 
-        add_button = Gtk.Button(label="Node hinzufügen")
+        add_button = Gtk.Button(label="Add node")
         add_button.connect("clicked", self.add_row)
         footer.pack_start(add_button, False, False, 0)
 
-        self.refresh_automation_combo(0)
+        self.refresh_sidebar(0)
         self.load_automation(0)
         self.show_all()
 
@@ -2014,6 +2089,16 @@ class MousemoveConfigDialog(Gtk.Dialog):
             }
             .input-pilot-row-number {
                 opacity: 0.72;
+            }
+            #input-pilot-sidebar {
+                background-color: @theme_base_color;
+            }
+            .input-pilot-sidebar-row {
+                padding: 0;
+            }
+            .input-pilot-sidebar-row-selected {
+                background-color: @theme_selected_bg_color;
+                color: @theme_selected_fg_color;
             }
             """
         )
@@ -2046,22 +2131,194 @@ class MousemoveConfigDialog(Gtk.Dialog):
             )
         return normalized
 
-    def refresh_automation_combo(self, active_index: int) -> None:
+    def refresh_sidebar(self, active_index: int) -> None:
         self.loading = True
-        self.automation_combo.remove_all()
+        for child in list(self.sidebar_row_events):
+            self.sidebar_list_box.remove(child)
+        self.sidebar_row_events = []
         for automation in self.automation_state:
-            self.automation_combo.append_text(str(automation.get("name", "Automation")))
-        self.automation_combo.set_active(max(0, min(active_index, len(self.automation_state) - 1)))
-        self.loading = False
+            row_event = Gtk.EventBox()
+            row_event.set_visible_window(True)
+            row_event.get_style_context().add_class("input-pilot-sidebar-row")
+            row_event.drag_dest_set(
+                Gtk.DestDefaults.ALL, self.SIDEBAR_DND_TARGETS, Gdk.DragAction.MOVE
+            )
 
-    def on_automation_changed(self, _combo: Gtk.ComboBoxText) -> None:
-        if self.loading:
-            return
-        new_index = self.automation_combo.get_active()
-        if new_index < 0 or new_index == self.current_index:
-            return
+            row_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            row_hbox.set_border_width(5)
+            row_event.add(row_hbox)
+
+            grip_event = Gtk.EventBox()
+            grip_event.set_visible_window(True)
+            grip_event.set_above_child(True)
+            grip_event.add_events(Gdk.EventMask.ENTER_NOTIFY_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK)
+            grip_label = Gtk.Label(label="⠿")
+            grip_label.get_style_context().add_class("input-pilot-grip")
+            grip_label.set_tooltip_text("Drag to reorder")
+            grip_event.add(grip_label)
+            grip_event.drag_source_set(
+                Gdk.ModifierType.BUTTON1_MASK, self.SIDEBAR_DND_TARGETS, Gdk.DragAction.MOVE
+            )
+            grip_event.connect("enter-notify-event", self.on_handle_enter)
+            grip_event.connect("leave-notify-event", self.on_handle_leave)
+            grip_event.connect("button-press-event", lambda _w, _e: True)
+            row_hbox.pack_start(grip_event, False, False, 0)
+
+            name_label = Gtk.Label(label=str(automation.get("name", "Automation")))
+            name_label.set_xalign(0)
+            row_hbox.pack_start(name_label, True, True, 0)
+
+            self.sidebar_list_box.pack_start(row_event, False, False, 0)
+            self.sidebar_row_events.append(row_event)
+
+            grip_event.connect("drag-data-get", self.on_sidebar_drag_data_get, row_event)
+            grip_event.connect("drag-begin", self.on_sidebar_drag_begin, row_event)
+            grip_event.connect("drag-end", self.on_sidebar_drag_end)
+            row_event.connect("drag-motion", self.on_sidebar_row_drag_motion)
+            row_event.connect("drag-leave", self.on_sidebar_drag_leave)
+            row_event.connect("drag-data-received", self.on_sidebar_row_drag_received)
+            row_event.connect("button-press-event", self.on_sidebar_row_clicked)
+
+        self.sidebar_list_box.show_all()
+        self.sidebar_drop_indicator.hide()
+        self.loading = False
+        target = max(0, min(active_index, len(self.automation_state) - 1))
+        self.current_index = target
+        self.update_sidebar_selection()
+
+    def update_sidebar_selection(self) -> None:
+        for i, row_event in enumerate(self.sidebar_row_events):
+            ctx = row_event.get_style_context()
+            if i == self.current_index:
+                ctx.add_class("input-pilot-sidebar-row-selected")
+            else:
+                ctx.remove_class("input-pilot-sidebar-row-selected")
+
+    def on_sidebar_row_clicked(self, widget: Gtk.EventBox, event: Gdk.EventButton) -> bool:
+        if event.button != 1:
+            return False
+        if widget not in self.sidebar_row_events:
+            return False
+        new_index = self.sidebar_row_events.index(widget)
+        if new_index == self.current_index:
+            return False
         self.save_current_automation()
         self.load_automation(new_index)
+        return False
+
+    def on_name_changed(self, entry: Gtk.Entry) -> None:
+        if self.loading:
+            return
+        if not 0 <= self.current_index < len(self.sidebar_row_events):
+            return
+        row_event = self.sidebar_row_events[self.current_index]
+        row_hbox = row_event.get_child()
+        if not isinstance(row_hbox, Gtk.Box):
+            return
+        for child in row_hbox.get_children():
+            if isinstance(child, Gtk.Label):
+                child.set_text(entry.get_text() or f"Automation {self.current_index + 1}")
+                break
+
+    def collapse_sidebar(self, _button: Gtk.Button) -> None:
+        self.sidebar_revealer.set_reveal_child(False)
+        self.sidebar_sep.hide()
+        self.expand_btn.show()
+
+    def expand_sidebar(self, _button: Gtk.Button) -> None:
+        self.sidebar_revealer.set_reveal_child(True)
+        self.sidebar_sep.show()
+        self.expand_btn.hide()
+
+    def show_sidebar_drop_indicator(self, index: int) -> None:
+        self.sidebar_drop_index = max(0, min(index, len(self.sidebar_row_events)))
+        self.sidebar_list_box.reorder_child(self.sidebar_drop_indicator, self.sidebar_drop_index)
+        self.sidebar_drop_indicator.show()
+
+    def hide_sidebar_drop_indicator(self) -> None:
+        self.sidebar_drop_indicator.hide()
+        self.sidebar_drop_index = None
+
+    def sidebar_insertion_index_for_y(self, y: int) -> int:
+        for i, row_event in enumerate(self.sidebar_row_events):
+            alloc = row_event.get_allocation()
+            if y < alloc.y + alloc.height / 2:
+                return i
+        return len(self.sidebar_row_events)
+
+    def sync_sidebar_row_order(self) -> None:
+        self.sidebar_list_box.reorder_child(self.sidebar_drop_indicator, 0)
+        for i, row_event in enumerate(self.sidebar_row_events):
+            self.sidebar_list_box.reorder_child(row_event, i + 1)
+
+    def on_sidebar_drag_data_get(
+        self, _widget, _context, data, _info: int, _time: int, row_event: Gtk.EventBox
+    ) -> None:
+        if row_event in self.sidebar_row_events:
+            data.set_text(str(self.sidebar_row_events.index(row_event)), -1)
+
+    def on_sidebar_drag_begin(self, _widget, _context, row_event: Gtk.EventBox) -> None:
+        if row_event not in self.sidebar_row_events:
+            return
+        self.sidebar_drag_source_index = self.sidebar_row_events.index(row_event)
+        row_event.set_opacity(0.18)
+        self.show_sidebar_drop_indicator(self.sidebar_drag_source_index)
+
+    def on_sidebar_drag_end(self, _widget, _context) -> None:
+        for row_event in self.sidebar_row_events:
+            row_event.set_opacity(1.0)
+        self.sidebar_drag_source_index = None
+        self.hide_sidebar_drop_indicator()
+        self.sync_sidebar_row_order()
+
+    def on_sidebar_row_drag_motion(
+        self, widget: Gtk.EventBox, context, _x: int, y: int, time_: int
+    ) -> bool:
+        target_index = self.sidebar_insertion_index_for_y(widget.get_allocation().y + y)
+        self.show_sidebar_drop_indicator(target_index)
+        Gdk.drag_status(context, Gdk.DragAction.MOVE, time_)
+        return True
+
+    def on_sidebar_drag_leave(self, _widget, _context, _time: int) -> None:
+        return
+
+    def on_sidebar_row_drag_received(
+        self, widget: Gtk.EventBox, context, _x: int, y: int, data, _info: int, time_: int
+    ) -> None:
+        try:
+            source_index = int(data.get_text() or "-1")
+        except (TypeError, ValueError):
+            Gtk.drag_finish(context, False, False, time_)
+            return
+        if not 0 <= source_index < len(self.automation_state):
+            Gtk.drag_finish(context, False, False, time_)
+            return
+        target_index = self.sidebar_drop_index
+        if target_index is None:
+            target_index = self.sidebar_insertion_index_for_y(widget.get_allocation().y + y)
+        self.move_sidebar_automation(source_index, target_index)
+        Gtk.drag_finish(context, True, False, time_)
+
+    def move_sidebar_automation(self, source_index: int, target_index: int) -> None:
+        if source_index == target_index:
+            return
+        # Save current state directly — avoid refresh_sidebar which rebuilds sidebar_row_events
+        if self.automation_state:
+            self.automation_state[self.current_index] = {
+                "name": self.name_entry.get_text().strip()
+                or f"Automation {self.current_index + 1}",
+                "shortcut": self.shortcut(),
+                "debug": self.debug_check.get_active(),
+                "steps": self.steps(),
+            }
+        item = self.automation_state.pop(source_index)
+        row_event = self.sidebar_row_events.pop(source_index)
+        if source_index < target_index:
+            target_index -= 1
+        self.automation_state.insert(target_index, item)
+        self.sidebar_row_events.insert(target_index, row_event)
+        self.sync_sidebar_row_order()
+        self.load_automation(target_index)
 
     def clear_step_rows(self) -> None:
         for row in list(self.rows):
@@ -2110,18 +2367,26 @@ class MousemoveConfigDialog(Gtk.Dialog):
         if not self.rows:
             self.add_row_values("", "", "left", "", "", 0, 0, 0.0)
         self.update_row_numbers()
+        self.update_sidebar_selection()
 
     def save_current_automation(self) -> None:
         if not self.automation_state:
             return
+        name = self.name_entry.get_text().strip() or f"Automation {self.current_index + 1}"
         self.automation_state[self.current_index] = {
-            "name": self.name_entry.get_text().strip()
-            or f"Automation {self.current_index + 1}",
+            "name": name,
             "shortcut": self.shortcut(),
             "debug": self.debug_check.get_active(),
             "steps": self.steps(),
         }
-        self.refresh_automation_combo(self.current_index)
+        if 0 <= self.current_index < len(self.sidebar_row_events):
+            row_event = self.sidebar_row_events[self.current_index]
+            row_hbox = row_event.get_child()
+            if isinstance(row_hbox, Gtk.Box):
+                for child in row_hbox.get_children():
+                    if isinstance(child, Gtk.Label):
+                        child.set_text(name)
+                        break
 
     def add_automation(self, _button: Gtk.Button) -> None:
         self.save_current_automation()
@@ -2133,22 +2398,48 @@ class MousemoveConfigDialog(Gtk.Dialog):
                 "steps": [],
             }
         )
-        self.refresh_automation_combo(len(self.automation_state) - 1)
+        self.refresh_sidebar(len(self.automation_state) - 1)
         self.load_automation(len(self.automation_state) - 1)
         self.name_entry.grab_focus()
 
     def remove_automation(self, _button: Gtk.Button) -> None:
+        name = self.automation_state[self.current_index].get("name", "this automation")
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.WARNING,
+            buttons=Gtk.ButtonsType.NONE,
+            text=f"Remove \"{name}\"?",
+        )
+        dialog.format_secondary_text("This automation will be permanently deleted.")
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Remove", Gtk.ResponseType.OK)
+        response = dialog.run()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
         if len(self.automation_state) <= 1:
             self.automation_state = [
                 {"name": "Automation 1", "shortcut": "", "debug": False, "steps": []}
             ]
-            self.refresh_automation_combo(0)
+            self.refresh_sidebar(0)
             self.load_automation(0)
             return
         self.automation_state.pop(self.current_index)
         next_index = min(self.current_index, len(self.automation_state) - 1)
-        self.refresh_automation_combo(next_index)
+        self.refresh_sidebar(next_index)
         self.load_automation(next_index)
+
+    def duplicate_automation(self, _button: Gtk.Button) -> None:
+        self.save_current_automation()
+        source = self.automation_state[self.current_index]
+        duplicate = copy.deepcopy(source)
+        duplicate["name"] = f"{source.get('name', 'Automation')} (Copy)"
+        duplicate["shortcut"] = ""
+        self.automation_state.append(duplicate)
+        self.refresh_sidebar(len(self.automation_state) - 1)
+        self.load_automation(len(self.automation_state) - 1)
+        self.name_entry.grab_focus()
 
     def selected_index(self) -> int:
         return self.current_index + 1
@@ -2867,11 +3158,11 @@ class MousemoveConfigDialog(Gtk.Dialog):
             modal=True,
             message_type=Gtk.MessageType.WARNING,
             buttons=Gtk.ButtonsType.NONE,
-            text=f"Node {number} entfernen?",
+            text=f"Remove node {number}?",
         )
-        dialog.format_secondary_text("Dieser Schritt wird aus der Automation gelöscht.")
-        dialog.add_button("Abbrechen", Gtk.ResponseType.CANCEL)
-        dialog.add_button("Entfernen", Gtk.ResponseType.OK)
+        dialog.format_secondary_text("This step will be permanently deleted from the automation.")
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Remove", Gtk.ResponseType.OK)
         response = dialog.run()
         dialog.destroy()
         if response == Gtk.ResponseType.OK:
@@ -3033,7 +3324,7 @@ class KeyComboRecorderDialog(Gtk.Dialog):
 
         content = self.get_content_area()
         self.label = Gtk.Label(
-            label="Gewünschte Tastenkombination drücken, z.B. Ctrl+S."
+            label="Press the desired key combination, e.g. Ctrl+S."
         )
         self.label.set_xalign(0)
         content.add(self.label)
@@ -3134,11 +3425,11 @@ class FolderTemplateDialog(Gtk.Dialog):
         buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         outer.pack_start(buttons, False, False, 0)
 
-        add_button = Gtk.Button(label="Template hinzufügen")
+        add_button = Gtk.Button(label="Add template")
         add_button.connect("clicked", self.add_row)
         buttons.pack_start(add_button, False, False, 0)
 
-        remove_button = Gtk.Button(label="Entfernen")
+        remove_button = Gtk.Button(label="Remove")
         remove_button.connect("clicked", self.remove_selected_row)
         buttons.pack_start(remove_button, False, False, 0)
 
@@ -3156,7 +3447,7 @@ class FolderTemplateDialog(Gtk.Dialog):
         modifier, key = parse_shortcut(shortcut) if shortcut else ("Ctrl", "N")
         modifier_combo = Gtk.ComboBoxText()
         for modifier_option in MODIFIER_OPTIONS:
-            modifier_combo.append_text(modifier_option or "Keine")
+            modifier_combo.append_text(modifier_option or "—")
         modifier_combo.set_active(
             MODIFIER_OPTIONS.index(modifier) if modifier in MODIFIER_OPTIONS else 0
         )
@@ -3164,7 +3455,7 @@ class FolderTemplateDialog(Gtk.Dialog):
         row.pack_start(modifier_combo, False, False, 0)
 
         key_combo = Gtk.ComboBoxText()
-        key_combo.append_text("Keine")
+        key_combo.append_text("—")
         for hotkey in HOTKEY_KEYS:
             key_combo.append_text(hotkey)
         key_combo.set_active(HOTKEY_KEYS.index(key) + 1 if key in HOTKEY_KEYS else 0)
@@ -3330,11 +3621,11 @@ class TextReplacementDialog(Gtk.Dialog):
         buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         outer.pack_start(buttons, False, False, 0)
 
-        add_button = Gtk.Button(label="Hinzufügen")
+        add_button = Gtk.Button(label="Add")
         add_button.connect("clicked", self.add_row)
         buttons.pack_start(add_button, False, False, 0)
 
-        remove_button = Gtk.Button(label="Entfernen")
+        remove_button = Gtk.Button(label="Remove")
         remove_button.connect("clicked", self.remove_selected_row)
         buttons.pack_start(remove_button, False, False, 0)
 
@@ -3443,7 +3734,7 @@ class ShortcutConfigDialog(Gtk.Dialog):
         top_label = Gtk.Label(label="Modifier")
         top_label.set_xalign(0)
         for modifier in MODIFIER_OPTIONS:
-            self.modifier_combo.append_text(modifier or "Keine")
+            self.modifier_combo.append_text(modifier or "—")
         self.modifier_combo.set_active(0)
         self.modifier_combo.connect("changed", self.on_modifier_changed)
         top_row.pack_start(top_label, False, False, 0)
@@ -3454,9 +3745,9 @@ class ShortcutConfigDialog(Gtk.Dialog):
         grid.set_border_width(8)
         content.add(grid)
 
-        key_header = Gtk.Label(label="Taste")
+        key_header = Gtk.Label(label="Key")
         key_header.set_xalign(0)
-        target_header = Gtk.Label(label="Pfad oder Link")
+        target_header = Gtk.Label(label="Path or link")
         target_header.set_xalign(0)
         grid.attach(key_header, 0, 0, 1, 1)
         grid.attach(target_header, 1, 0, 3, 1)
@@ -3468,8 +3759,8 @@ class ShortcutConfigDialog(Gtk.Dialog):
             entry.set_hexpand(True)
             entry.set_text(self.shortcuts_state.get(key, ""))
             entry.set_placeholder_text(key)
-            browse_button = Gtk.Button(label="Auswählen")
-            clear_button = Gtk.Button(label="Leeren")
+            browse_button = Gtk.Button(label="Browse")
+            clear_button = Gtk.Button(label="Clear")
             browse_button.connect("clicked", self.on_browse, entry)
             clear_button.connect("clicked", self.on_clear, entry)
 

@@ -58,7 +58,10 @@ running template click and releases mouse buttons if needed.
 ## Input Automations
 
 The tray menu contains an `Input Automations...` editor for named input
-automations. Each automation can have its own trigger hotkey. Hotkeys support
+automations. The editor has a collapsible sidebar listing all automations;
+click an entry to switch, drag the `⠿` handle to reorder. The sidebar toolbar
+provides buttons to add, remove (with confirmation), and duplicate the selected
+automation. Each automation can have its own trigger hotkey. Hotkeys support
 modifiers plus function keys, letters, numbers, and common navigation keys.
 
 Each node has an action (`Click`, `Drag`, `Move mouse`, or `Input`) plus the
@@ -67,10 +70,10 @@ screenshot templates, fixed X/Y coordinates, or the previous mouse position
 captured when the automation started. Input nodes can send key combos such as
 `Ctrl+S` or type text strings. During a chain the pointer can continue from
 step to step; after the automation finishes, it returns to the original
-position. Nodes can be reordered by dragging the handle on the left side of
-each row; row numbers update automatically.
+position. Nodes can be reordered by dragging the `⠿` handle on the left side
+of each row; row numbers update automatically.
 
-Mousemove automations are stored in:
+Automations are stored in:
 
 ```text
 ~/.config/wayland-automation/mousemove-sequence.json
