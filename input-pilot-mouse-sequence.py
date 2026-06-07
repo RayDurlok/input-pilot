@@ -347,7 +347,7 @@ def set_clipboard(text: str) -> None:
     )
 
 
-def type_string(text: str, ydotool_socket: str | None) -> None:
+def paste_string(text: str, ydotool_socket: str | None) -> None:
     ensure_sequence_not_aborted()
     if not text:
         raise SystemExit("Input string node is empty")
@@ -360,6 +360,13 @@ def type_string(text: str, ydotool_socket: str | None) -> None:
         if saved_clipboard is not None:
             interruptible_sleep(CLIPBOARD_RESTORE_DELAY_SECONDS)
             set_clipboard(saved_clipboard)
+
+
+def type_string_by_keys(text: str, ydotool_socket: str | None) -> None:
+    ensure_sequence_not_aborted()
+    if not text:
+        raise SystemExit("Input string node is empty")
+    run_ydotool(["type", "--key-delay=0", "--key-hold=1", "--", text], ydotool_socket)
 
 
 def send_key_combo(combo: str, ydotool_socket: str | None) -> None:
@@ -713,7 +720,9 @@ def run_model_step(
         input_type = str(step.get("input_type", "keys")).strip().lower()
         log_sequence(f"input type={input_type}")
         if input_type == "text":
-            type_string(str(step.get("text", "")), ydotool_socket)
+            paste_string(str(step.get("text", "")), ydotool_socket)
+        elif input_type == "typed-text":
+            type_string_by_keys(str(step.get("text", "")), ydotool_socket)
         else:
             send_key_combo(str(step.get("keys", "")).strip(), ydotool_socket)
         return 0
@@ -964,7 +973,15 @@ def run_single_sequence_step(
         text = str(step.get("text", ""))
         print(f"step {step_index}: text")
         try:
-            type_string(text, ydotool_socket)
+            paste_string(text, ydotool_socket)
+        except SystemExit as exc:
+            notify_debug(debug, str(exc))
+            raise
+    elif click == "typed-text":
+        text = str(step.get("text", ""))
+        print(f"step {step_index}: typed text")
+        try:
+            type_string_by_keys(text, ydotool_socket)
         except SystemExit as exc:
             notify_debug(debug, str(exc))
             raise

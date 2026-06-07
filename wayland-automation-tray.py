@@ -585,6 +585,9 @@ def clean_mouse_steps(data: object) -> list[dict[str, object]]:
             elif click == "text":
                 action = "input"
                 input_type = "text"
+            elif click == "typed-text":
+                action = "input"
+                input_type = "typed-text"
         if action not in {"click", "drag", "move", "input", "if"}:
             action = "click"
         if condition == "screenshot-missing":
@@ -599,7 +602,7 @@ def clean_mouse_steps(data: object) -> list[dict[str, object]]:
             source_type = "template"
         if target_type not in {"template", "position", "previous-position"}:
             target_type = "template" if action in {"click", "drag"} else "position"
-        if input_type not in {"keys", "text"}:
+        if input_type not in {"keys", "text", "typed-text"}:
             input_type = "keys"
         if match_choice not in {"best", "rightmost", "leftmost", "topmost", "bottommost", "middle"}:
             match_choice = "best"
@@ -624,6 +627,7 @@ def clean_mouse_steps(data: object) -> list[dict[str, object]]:
             "position",
             "previous-position",
             "text",
+            "typed-text",
             "if",
         }
         has_step = False
@@ -2049,6 +2053,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
         ("drag-position", "Drag to mouse position"),
         ("keys", "Key combo"),
         ("text", "Input string"),
+        ("typed-text", "Type string"),
         ("position", "Mouse position"),
         ("previous-position", "Previous mouse position"),
     ]
@@ -2077,6 +2082,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
     INPUT_OPTIONS = [
         ("keys", "Key combo"),
         ("text", "Input string"),
+        ("typed-text", "Type string"),
     ]
     CONDITION_OPTIONS = [
         ("previous-node-failed", "Previous node failed"),
@@ -2910,6 +2916,9 @@ class MousemoveConfigDialog(Gtk.Dialog):
             elif click == "text":
                 action = "input"
                 input_type = "text"
+            elif click == "typed-text":
+                action = "input"
+                input_type = "typed-text"
             elif click == "keys":
                 action = "input"
                 input_type = "keys"
@@ -3763,7 +3772,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
             for widget in (keys_entry, record_keys_button):
                 if isinstance(widget, Gtk.Widget):
                     widget.show()
-        if action == "input" and input_type == "text":
+        if action == "input" and input_type in {"text", "typed-text"}:
             if isinstance(text_entry, Gtk.Widget):
                 text_entry.show()
 
@@ -4020,7 +4029,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
                 target = ""
                 if input_type == "keys" and not keys:
                     continue
-                if input_type == "text" and not text:
+                if input_type in {"text", "typed-text"} and not text:
                     continue
             elif action == "if":
                 click = "if"

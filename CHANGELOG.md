@@ -93,6 +93,8 @@
 - **Input string paste**: `Input` text nodes now insert text via
   `wl-copy` + `Ctrl+V` and restore the previous clipboard, matching the more
   reliable Text Replacement input path.
+- **Typed text fallback**: `Input` nodes also offer `Type string` for apps that
+  need the older simulated keypress behavior instead of clipboard paste.
 - **Move mouse replaces click-hover**: hover-style behavior now belongs to
   `Move mouse`; legacy `Click` + `Hover` nodes are loaded as move nodes.
 - **KWin template cache**: template matching now reads KWin `ScreenShot2` raw

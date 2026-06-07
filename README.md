@@ -118,7 +118,8 @@ Each node has an action (`Click`, `Drag`, `Move mouse`, `Input`, or `If`) plus
 the source/target fields needed for that action. Sources and targets can be
 screenshot templates, fixed X/Y coordinates, or the previous mouse position
 captured when the automation started. Input nodes can send key combos such as
-`Ctrl+S` or paste text strings through the clipboard. Click nodes can optionally
+`Ctrl+S`, paste text strings through the clipboard, or type text by simulating
+individual key presses. Click nodes can optionally
 enable the mouse-icon toggle to animate the pointer to the target before
 clicking. Screenshot targets can choose which near-best match to use (`Best`,
 `Rightmost`, `Middle`,
