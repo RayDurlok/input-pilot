@@ -118,9 +118,10 @@ Each node has an action (`Click`, `Drag`, `Move mouse`, `Input`, or `If`) plus
 the source/target fields needed for that action. Sources and targets can be
 screenshot templates, fixed X/Y coordinates, or the previous mouse position
 captured when the automation started. Input nodes can send key combos such as
-`Ctrl+S` or type text strings. Click nodes can optionally enable the mouse-icon
-toggle to animate the pointer to the target before clicking. Screenshot targets
-can choose which near-best match to use (`Best`, `Rightmost`, `Middle`,
+`Ctrl+S` or paste text strings through the clipboard. Click nodes can optionally
+enable the mouse-icon toggle to animate the pointer to the target before
+clicking. Screenshot targets can choose which near-best match to use (`Best`,
+`Rightmost`, `Middle`,
 `Leftmost`, `Topmost`, `Bottommost`) when identical UI elements appear more
 than once on screen. During a chain the pointer can continue from step to step;
 after the automation finishes, it returns to the original position. Nodes can be

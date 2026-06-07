@@ -21,6 +21,7 @@ TEMPLATE_SERVER = SCRIPT_DIR / "input-pilot-template-server.py"
 CLICK_SCRIPT = SCRIPT_DIR / "wayland-click-image.py"
 CONFIG_FILE = Path.home() / ".config/wayland-automation/mousemove-sequence.json"
 DEFAULT_YDOTOOL_SOCKET = "/tmp/ydotool_socket"
+CLIPBOARD_RESTORE_DELAY_SECONDS = 0.15
 TEMPLATE_CLICK_RE = re.compile(r"\bclick_x=(-?\d+)\s+click_y=(-?\d+)\b")
 MATCH_CHOICES = {"best", "rightmost", "leftmost", "topmost", "bottommost", "middle"}
 AUTOMATION_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{5,63}$")
@@ -315,12 +316,50 @@ def run_ydotool(arguments: list[str], socket_path: str | None) -> None:
     subprocess.run(command, check=True, env=env)
 
 
+def clipboard_text() -> str | None:
+    wl_paste = shutil.which("wl-paste")
+    if not wl_paste:
+        return None
+    result = subprocess.run(
+        [wl_paste, "--no-newline"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        timeout=1,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def set_clipboard(text: str) -> None:
+    wl_copy = shutil.which("wl-copy")
+    if not wl_copy:
+        raise SystemExit("wl-copy is not installed")
+    subprocess.run(
+        [wl_copy, "--"],
+        input=text,
+        check=True,
+        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 def type_string(text: str, ydotool_socket: str | None) -> None:
     ensure_sequence_not_aborted()
     if not text:
         raise SystemExit("Input string node is empty")
-    run_ydotool(["type", "--key-delay=0", "--key-hold=1", "--", text], ydotool_socket)
-    ensure_sequence_not_aborted()
+    saved_clipboard = clipboard_text()
+    set_clipboard(text)
+    try:
+        run_ydotool(["key", "29:1", "47:1", "47:0", "29:0"], ydotool_socket)
+        ensure_sequence_not_aborted()
+    finally:
+        if saved_clipboard is not None:
+            interruptible_sleep(CLIPBOARD_RESTORE_DELAY_SECONDS)
+            set_clipboard(saved_clipboard)
 
 
 def send_key_combo(combo: str, ydotool_socket: str | None) -> None:

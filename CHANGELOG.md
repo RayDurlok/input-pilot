@@ -90,6 +90,9 @@
 - **Smooth move persistence**: `Move mouse` nodes now keep the mouse-icon
   smooth-move toggle after saving and use it for position and previous-position
   targets.
+- **Input string paste**: `Input` text nodes now insert text via
+  `wl-copy` + `Ctrl+V` and restore the previous clipboard, matching the more
+  reliable Text Replacement input path.
 - **Move mouse replaces click-hover**: hover-style behavior now belongs to
   `Move mouse`; legacy `Click` + `Hover` nodes are loaded as move nodes.
 - **KWin template cache**: template matching now reads KWin `ScreenShot2` raw
