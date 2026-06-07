@@ -7,10 +7,14 @@
 - **Installer**: added `install.sh` as the main setup entry point. It checks
   runtime commands and Python modules, creates the `input-pilot` launcher in
   `~/.local/bin`, and installs desktop/autostart entries.
+- **Dependency prompt**: when required Fedora dependencies are missing,
+  `install.sh` now asks whether it should install the typical package set via
+  `sudo dnf install`.
 - **Uninstaller**: added `uninstall.sh` to remove the launcher and desktop
   entries while keeping user configuration and logs.
 - **README refresh**: installation now documents the tray launcher and
-  persistent `ydotoold` setup instead of the older one-off shortcut helpers.
+  persistent `ydotoold` setup instead of the older one-off shortcut helpers,
+  and documents the `input` group requirement for Text Replacement.
 - **Legacy helper cleanup**: removed old one-off F1/Alt+F7 shortcut installer
   scripts now that shortcuts are configured through the tray UI.
 

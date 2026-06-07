@@ -14,7 +14,24 @@ and run:
 
 The installer checks required commands and Python modules, installs the
 `input-pilot` launcher into `~/.local/bin`, and refreshes the desktop and
-autostart entries.
+autostart entries. If Fedora packages are missing, the installer prints the
+missing commands/modules and asks whether it should install the typical package
+set with `sudo dnf install`.
+
+Text Replacement reads keyboard events from `/dev/input`. Add your user to the
+`input` group once, then log out and back in so the new group is active:
+
+```bash
+sudo usermod -aG input "$USER"
+```
+
+Verify after logging in again:
+
+```bash
+groups
+```
+
+The output should include `input`.
 
 Input automation needs an accessible `ydotoold` socket. Configure the
 persistent service once:
@@ -203,7 +220,8 @@ Example:
 ```
 
 Typing `ct.` followed by space replaces it with `ChatGPT`. On Wayland this
-requires low-level read access to keyboard events in `/dev/input`.
+requires low-level read access to keyboard events in `/dev/input`, usually by
+being a member of the `input` group.
 
 Replacement text is inserted via clipboard paste (`wl-copy` + `Ctrl+V`) so all
 Unicode characters and special symbols work correctly regardless of the active

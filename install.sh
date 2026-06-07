@@ -4,6 +4,21 @@ set -euo pipefail
 app_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 bin_dir="${HOME}/.local/bin"
 launcher="${bin_dir}/input-pilot"
+fedora_packages=(
+  python3-gobject
+  gtk3
+  libappindicator-gtk3
+  ydotool
+  wl-clipboard
+  python3-opencv
+  python3-numpy
+  python3-evdev
+  glib2
+  xdg-utils
+  libkscreen
+  kf6-kconfig
+  kf6-kservice
+)
 
 missing=()
 optional_missing=()
@@ -20,34 +35,24 @@ optional() {
   fi
 }
 
-need python3
-need ydotool
-need wl-copy
-need wl-paste
-need busctl
-need gdbus
-need kreadconfig6
-need kbuildsycoca6
-need kscreen-doctor
-need xdg-open
-optional notify-send
+check_commands() {
+  missing=()
+  optional_missing=()
+  need python3
+  need ydotool
+  need wl-copy
+  need wl-paste
+  need busctl
+  need gdbus
+  need kreadconfig6
+  need kbuildsycoca6
+  need kscreen-doctor
+  need xdg-open
+  optional notify-send
+}
 
-if (( ${#missing[@]} )); then
-  cat >&2 <<EOF
-Input Pilot is missing required commands:
-
-  ${missing[*]}
-
-On Fedora KDE, install the matching packages first. Typical package names are:
-
-  sudo dnf install python3-gobject gtk3 libappindicator-gtk3 ydotool wl-clipboard python3-opencv python3-numpy python3-evdev kscreen kf6-kconfig
-
-Then run ./install.sh again.
-EOF
-  exit 1
-fi
-
-if ! /usr/bin/python3 - <<'PY'
+check_python_modules() {
+  /usr/bin/python3 - <<'PY'
 import cv2
 import evdev
 import gi
@@ -56,17 +61,76 @@ import numpy
 gi.require_version("Gtk", "3.0")
 gi.require_version("AppIndicator3", "0.1")
 PY
-then
-  cat >&2 <<'EOF'
-Input Pilot is missing required Python modules.
+}
 
-On Fedora KDE, install the matching packages first. Typical package names are:
+install_fedora_packages() {
+  if ! command -v dnf >/dev/null 2>&1; then
+    return 1
+  fi
+  echo "Installing Fedora packages:"
+  printf '  %s\n' "${fedora_packages[@]}"
+  sudo dnf install -y "${fedora_packages[@]}"
+}
 
-  sudo dnf install python3-gobject gtk3 libappindicator-gtk3 python3-opencv python3-numpy python3-evdev
+print_missing_help() {
+  cat >&2 <<EOF
+Input Pilot is missing required dependencies.
+
+Missing commands:
+  ${missing[*]:-(none)}
+
+Install them on Fedora KDE with:
+
+  sudo dnf install ${fedora_packages[*]}
 
 Then run ./install.sh again.
 EOF
+}
+
+check_commands
+if (( ${#missing[@]} )) || ! check_python_modules; then
+  print_missing_help
+  if [[ -t 0 ]] && command -v sudo >/dev/null 2>&1 && command -v dnf >/dev/null 2>&1; then
+    read -r -p "Install missing Fedora packages now? [y/N] " reply
+    case "${reply}" in
+      [yY]|[yY][eE][sS]|[jJ]|[jJ][aA])
+        install_fedora_packages
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
+  else
+    exit 1
+  fi
+fi
+
+check_commands
+if (( ${#missing[@]} )); then
+  print_missing_help
   exit 1
+fi
+
+if ! check_python_modules; then
+  cat >&2 <<'EOF'
+Input Pilot is missing required Python modules.
+
+Install the required Fedora packages and run ./install.sh again:
+
+  sudo dnf install python3-gobject gtk3 libappindicator-gtk3 python3-opencv python3-numpy python3-evdev
+EOF
+  exit 1
+fi
+
+if ! id -nG "${USER}" | grep -qw input; then
+  cat <<EOF
+
+Text Replacement needs read access to /dev/input.
+Add your user to the input group once, then log out and back in:
+
+  sudo usermod -aG input "${USER}"
+
+EOF
 fi
 
 mkdir -p "${bin_dir}"
