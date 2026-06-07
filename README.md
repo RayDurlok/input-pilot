@@ -3,19 +3,39 @@
 Small KDE Wayland automation helpers for global shortcuts, tray actions, and
 screen-template clicking.
 
-## Shortcuts
+## Install
 
-Install or refresh the configured shortcuts:
+Input Pilot is currently built for Fedora KDE on Wayland. Clone the repository
+and run:
 
 ```bash
-./install-f1-downloads-shortcut.sh
-./install-alt-f7-nextcloud-shortcut.sh
+./install.sh
 ```
 
-Current mappings:
+The installer checks required commands and Python modules, installs the
+`input-pilot` launcher into `~/.local/bin`, and refreshes the desktop and
+autostart entries.
 
-- `F1` / `Help`: open `~/Downloads/`
-- `Alt+F7`: open the configured browser link
+Input automation needs an accessible `ydotoold` socket. Configure the
+persistent service once:
+
+```bash
+./install-ydotool-service.sh
+```
+
+After installation, start Input Pilot with:
+
+```bash
+input-pilot
+```
+
+Remove the launcher and desktop entries with:
+
+```bash
+./uninstall.sh
+```
+
+## Shortcuts
 
 The tray menu contains a `Hotkeys...` editor where shortcuts can be mapped to
 local paths or links. Shortcuts can be typed manually or captured with the
@@ -28,11 +48,12 @@ Configured shortcuts are active while the tray helper is running. Choosing
 their normal application behavior.
 
 When a plain function key target is a local folder, the normal key becomes
-context-aware while the tray is running: `F1` opens `~/Downloads/`
-normally, but if KWin reports that a common Save/Open dialog is focused, `F1`
-pastes the folder path into that dialog and opens it there. `Shift+F1` remains
-available as an explicit file-dialog helper. This helper needs `ydotoold` on
-`/tmp/ydotool_socket` and the Wayland clipboard tools `wl-copy` / `wl-paste`.
+context-aware while the tray is running: it opens the folder normally, but if
+KWin reports that a common Save/Open dialog is focused, the shortcut pastes the
+folder path into that dialog and opens it there. The corresponding
+`Shift+<function key>` shortcut remains available as an explicit file-dialog
+helper. This helper needs `ydotoold` on `/tmp/ydotool_socket` and the Wayland
+clipboard tools `wl-copy` / `wl-paste`.
 
 ## Tray
 
@@ -48,14 +69,17 @@ Install the tray autostart entry:
 ./install-tray-autostart.sh
 ```
 
+The installer runs this automatically.
+
 The tray warms a small local template server so OpenCV stays loaded between
 template clicks. Template matching uses KWin's `ScreenShot2` API when
 available; repeated clicks on the same template first verify the last known
 position with a small cached-area screenshot before falling back to a full
 search. This keeps repeated screenshot actions fast without blindly clicking
 stale coordinates.
-`F12` is registered as an emergency stop while the tray is running; it aborts a
-running template click and releases mouse buttons if needed.
+`F12` is registered as an emergency stop while the tray is running; it aborts
+running template clicks and input automations, and releases mouse buttons if
+needed.
 
 ## Input Automations
 
@@ -71,28 +95,35 @@ the source/target fields needed for that action. Sources and targets can be
 screenshot templates, fixed X/Y coordinates, or the previous mouse position
 captured when the automation started. Input nodes can send key combos such as
 `Ctrl+S` or type text strings. Click nodes can optionally enable the mouse-icon
-toggle to animate the pointer to the target before clicking. During a chain the
-pointer can continue from step to step; after the automation finishes, it
-returns to the original position. Nodes can be reordered by dragging the `⠿`
-handle on the left side of each row; row numbers update automatically. Clicking
-a row number opens a note popover — notes are stored with the automation and
-shown as a tooltip on rows that have one.
+toggle to animate the pointer to the target before clicking. Screenshot targets
+can choose which near-best match to use (`Best`, `Rightmost`, `Middle`,
+`Leftmost`, `Topmost`, `Bottommost`) when identical UI elements appear more
+than once on screen. During a chain the pointer can continue from step to step;
+after the automation finishes, it returns to the original position. Nodes can be
+reordered by dragging the `⠿` handle on the left side of each row; row numbers
+update automatically. Clicking a row number opens a note popover — notes are
+stored with the automation and shown as a tooltip on rows that have one.
 
 `If` nodes act like block-coding containers. Conditions such as `Previous node
 failed`, `Previous node succeeded`, and `Always` control whether the indented
 child nodes below the `If` row run. Drag-and-drop is block-aware: moving an
 `If` row moves its children with it, and dropping nodes into a block applies the
-correct indentation.
+correct indentation. After an `If` block runs, the default continuation is
+`Next node`; it can optionally jump to another step, which is useful for
+recovery loops such as returning to step 1 after opening a missing panel. A run
+stops automatically when it reaches 3 jumps.
 
 Each automation can be triggered from the command line. The `Copy trigger
 command` button in the Trigger row copies the ready-to-use command:
 
 ```bash
-input-pilot-mouse-sequence.py --name "My Automation"
+input-pilot-mouse-sequence.py --id auto-123456789abc
 ```
 
-The runner also accepts `--index <n>` (1-based) for positional lookup. `--name`
-and `--index` are mutually exclusive; omitting both defaults to index 1.
+Automation IDs are generated automatically and stay stable when an automation is
+renamed or reordered. The runner also accepts `--name <name>` and
+`--index <n>` for backwards compatibility. `--id`, `--name`, and `--index` are
+mutually exclusive; omitting all three defaults to index 1.
 
 Automations are stored in:
 

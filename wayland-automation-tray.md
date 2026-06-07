@@ -1,29 +1,30 @@
 # Input Pilot Tray
 
-This tray helper is intentionally small:
+This tray helper provides the main Input Pilot menu:
 
-- `Downloads öffnen` opens `~/Downloads/`
-- `Button-Template klicken` runs `wayland-click-image.py` with the configured
-  template image
-- `ydotool prüfen` checks whether the ydotool socket is reachable
-- `Beenden` closes the tray helper
+- `Hotkeys...` configures global shortcut mappings to paths or links.
+- `Input Automations...` configures screenshot, pointer, keyboard, and
+  condition-based automation chains.
+- `Folder Templates...` configures folder-copy templates with trigger hotkeys.
+- `Textreplacement...` configures typed trigger replacements.
+- `ydotool prüfen` checks whether the ydotool socket is reachable.
+- `Beenden` closes the tray helper and unregisters the active shortcuts.
 
 Start it manually:
 
 ```bash
-./wayland-automation-tray.py
+./wayland-automation-tray.py --ydotool-socket /tmp/ydotool_socket
 ```
 
-Use a custom template:
+After running `./install.sh`, the launcher is also available as:
 
 ```bash
-./wayland-automation-tray.py \
-  --template ~/Pictures/button-templates/my-button.png
+input-pilot
 ```
 
-On KDE Wayland, global hotkeys should still be registered through KDE's own
-shortcut system. The tray app does not listen for global key presses directly,
-because Wayland blocks that for normal applications by design.
+On KDE Wayland, global hotkeys are registered through KDE's own shortcut
+system. Input Pilot does not listen for global key presses directly, because
+Wayland blocks that for normal applications by design.
 
 For mouse clicking, the helper expects an accessible `ydotoold` socket. The
 included helper starts one at `/tmp/ydotool_socket`:

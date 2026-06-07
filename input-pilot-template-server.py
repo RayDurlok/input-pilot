@@ -113,6 +113,7 @@ def request_args_from_payload(payload: dict) -> Namespace:
         ydotool_socket=payload.get("ydotool_socket"),
         coordinate_mode=payload.get("coordinate_mode", "global"),
         screen_scope=payload.get("screen_scope", "primary"),
+        match_choice=payload.get("match_choice", "best"),
     )
 
 
@@ -200,6 +201,7 @@ def fallback_click(args: argparse.Namespace) -> int:
         command.extend(["--ydotool-socket", args.ydotool_socket])
     command.extend(["--screen-scope", args.screen_scope])
     command.extend(["--coordinate-mode", args.coordinate_mode])
+    command.extend(["--match-choice", args.match_choice])
     return subprocess.run(command, check=False).returncode
 
 
@@ -230,6 +232,7 @@ def client(args: argparse.Namespace) -> int:
         "ydotool_socket": args.ydotool_socket,
         "coordinate_mode": args.coordinate_mode,
         "screen_scope": args.screen_scope,
+        "match_choice": args.match_choice,
     }
     try:
         response = send_request(payload)
@@ -238,7 +241,12 @@ def client(args: argparse.Namespace) -> int:
         return fallback_click(args)
 
     if not response.get("ok"):
-        log(f"server returned error, falling back: {response.get('error')}")
+        error = str(response.get("error", "template server returned an error"))
+        if "Match below threshold" in error:
+            log(f"server returned no match, not falling back: {error}")
+            print(error, file=sys.stderr)
+            return 1
+        log(f"server returned error, falling back: {error}")
         return fallback_click(args)
     print(response.get("summary", ""))
     if response.get("cursor"):
@@ -268,6 +276,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ydotool-socket")
     parser.add_argument("--coordinate-mode", choices=("output-local", "global"), default="global")
     parser.add_argument("--screen-scope", choices=("primary", "all"), default="primary")
+    parser.add_argument(
+        "--match-choice",
+        choices=("best", "rightmost", "leftmost", "topmost", "bottommost", "middle"),
+        default="best",
+    )
     args = parser.parse_args()
     if not args.server and not args.warmup and not args.stop and not args.template:
         parser.error("template is required unless --server, --warmup, or --stop is used")

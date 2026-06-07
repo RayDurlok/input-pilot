@@ -12,6 +12,7 @@ import shlex
 import signal
 import shutil
 import subprocess
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -25,8 +26,8 @@ from gi.repository import AppIndicator3, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 APP_ID = "input-pilot"
 APP_NAME = "Input Pilot"
+DESKTOP_APP_ID = "input-pilot-tray"
 SCRIPT_DIR = Path(__file__).resolve().parent
-OPEN_DOWNLOADS = SCRIPT_DIR / "open-downloads.sh"
 CLICK_IMAGE = SCRIPT_DIR / "wayland-click-image.py"
 TEMPLATE_SERVER = SCRIPT_DIR / "input-pilot-template-server.py"
 TEXT_REPLACEMENT_ENGINE = SCRIPT_DIR / "input-pilot-text-replacement.py"
@@ -40,6 +41,7 @@ TEXT_REPLACEMENTS_FILE = Path.home() / ".config/wayland-automation/text-replacem
 MOUSE_SEQUENCE_FILE = Path.home() / ".config/wayland-automation/mousemove-sequence.json"
 FOLDER_TEMPLATE_FILE = Path.home() / ".config/wayland-automation/folder-templates.json"
 DEFAULT_FOLDER_TEMPLATE = Path.home() / "Templates/Input Pilot Folder Template"
+APP_ICON = SCRIPT_DIR / "InputPilotIconRounded.png"
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
 ACTIVE_WINDOW_FILE = STATE_DIR / "wayland-automation/active-window.json"
 CURSOR_POSITION_FILE = STATE_DIR / "wayland-automation/cursor-position.json"
@@ -50,8 +52,10 @@ DEFAULT_DATE_ENTRIES: list[dict[str, object]] = [
     {"trigger": "dt_", "date_format": "yyyy_mm_dd", "enabled": True},
     {"trigger": "rnr.", "date_format": "yyyymmdd", "enabled": True},
 ]
+AUTOMATION_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{5,63}$")
 _DATE_FMT_CHARS_RE = re.compile(r'^(?:yyyy|yy|mm|dd|[.\-_/ ])+$')
 _DATE_FMT_TOKEN_RE = re.compile(r'yyyy|yy|mm|dd')
+PATH_DISPLAY_PARTS = 4
 OPEN_CONFIGURED_TARGET = SCRIPT_DIR / "open-configured-target.py"
 KWIN_ACTIVE_WINDOW_SCRIPT = SCRIPT_DIR / "kwin-active-window-state.js"
 KWIN_ACTIVE_WINDOW_SCRIPT_NAME = "wayland-automation-active-window-state"
@@ -521,6 +525,7 @@ def clean_mouse_steps(data: object) -> list[dict[str, object]]:
         condition = str(item.get("condition", "")).strip().lower()
         condition_template = str(item.get("condition_template", "")).strip()
         animate_mouse = bool(item.get("animate_mouse", False))
+        match_choice = str(item.get("match_choice", "best")).strip().lower()
         keys = str(item.get("keys", "")).strip()
         text = str(item.get("text", ""))
         try:
@@ -547,6 +552,11 @@ def clean_mouse_steps(data: object) -> list[dict[str, object]]:
             drag_steps = int(float(item.get("drag_steps", 2) or 2))
         except (TypeError, ValueError):
             drag_steps = 2
+        if_jump_enabled = bool(item.get("if_jump_enabled", False))
+        try:
+            if_jump_step = int(float(item.get("if_jump_step", 1) or 1))
+        except (TypeError, ValueError):
+            if_jump_step = 1
         if not action:
             if click == "hover":
                 action = "move"
@@ -591,6 +601,8 @@ def clean_mouse_steps(data: object) -> list[dict[str, object]]:
             target_type = "template" if action in {"click", "drag"} else "position"
         if input_type not in {"keys", "text"}:
             input_type = "keys"
+        if match_choice not in {"best", "rightmost", "leftmost", "topmost", "bottommost", "middle"}:
+            match_choice = "best"
         if action == "click":
             click = button
         elif action == "drag":
@@ -655,6 +667,7 @@ def clean_mouse_steps(data: object) -> list[dict[str, object]]:
                     "condition": condition,
                     "condition_template": "",
                     "animate_mouse": animate_mouse and action == "click",
+                    "match_choice": match_choice,
                     "keys": keys,
                     "text": text,
                     "indent": max(0, min(indent, 8)),
@@ -663,11 +676,57 @@ def clean_mouse_steps(data: object) -> list[dict[str, object]]:
                     "x": max(x, 0),
                     "y": max(y, 0),
                     "drag_steps": max(1, min(drag_steps, 200)),
+                    "if_jump_enabled": if_jump_enabled and action == "if",
+                    "if_jump_step": max(1, min(if_jump_step, 999)),
                     "wait": max(wait, 0.0),
                     "note": str(item.get("note", "")),
                 }
             )
     return steps
+
+
+def compact_path_for_display(path_text: str, max_parts: int = PATH_DISPLAY_PARTS) -> str:
+    path_text = str(path_text).strip()
+    if not path_text:
+        return ""
+    path = Path(path_text).expanduser()
+    parts = path.parts
+    if len(parts) <= max_parts:
+        return path_text
+    return ".../" + "/".join(parts[-max_parts:])
+
+
+def set_path_entry_value(entry: Gtk.Entry, path_text: str, compact: bool = True) -> None:
+    value = str(path_text).strip()
+    setattr(entry, "_input_pilot_full_path", value)
+    entry.set_tooltip_text(value or None)
+    entry.set_text(compact_path_for_display(value) if compact else value)
+    entry.set_position(-1)
+
+
+def path_entry_value(entry: Gtk.Entry) -> str:
+    text = entry.get_text().strip()
+    full_path = str(getattr(entry, "_input_pilot_full_path", "") or "").strip()
+    if full_path and text in {full_path, compact_path_for_display(full_path)}:
+        return full_path
+    return text
+
+
+def clean_automation_id(raw_id: object) -> str:
+    candidate = str(raw_id or "").strip().lower()
+    return candidate if AUTOMATION_ID_RE.fullmatch(candidate) else ""
+
+
+def unique_automation_id(raw_id: object, used_ids: set[str]) -> str:
+    candidate = clean_automation_id(raw_id)
+    if candidate and candidate not in used_ids:
+        used_ids.add(candidate)
+        return candidate
+    while True:
+        candidate = f"auto-{uuid.uuid4().hex[:12]}"
+        if candidate not in used_ids:
+            used_ids.add(candidate)
+            return candidate
 
 
 def load_mouse_config() -> dict[str, object]:
@@ -697,6 +756,7 @@ def load_mouse_config() -> dict[str, object]:
         automations = [data]
 
     clean_automations = []
+    used_ids: set[str] = set()
     for index, item in enumerate(automations, start=1):
         if not isinstance(item, dict):
             continue
@@ -704,6 +764,7 @@ def load_mouse_config() -> dict[str, object]:
         shortcut = canonical_shortcut(str(item.get("shortcut", "")))
         clean_automations.append(
             {
+                "id": unique_automation_id(item.get("id", ""), used_ids),
                 "name": name,
                 "shortcut": shortcut,
                 "debug": bool(item.get("debug", False)),
@@ -723,10 +784,11 @@ def load_mouse_sequence() -> list[dict[str, object]]:
     return []
 
 
-def save_mouse_config(automations: list[dict[str, object]]) -> None:
+def save_mouse_config(automations: list[dict[str, object]]) -> list[dict[str, object]]:
     MOUSE_SEQUENCE_FILE.parent.mkdir(parents=True, exist_ok=True)
     clean_automations = []
     used_names: set[str] = set()
+    used_ids: set[str] = set()
     for index, item in enumerate(automations, start=1):
         name = unique_automation_name(
             str(item.get("name", "")),
@@ -736,6 +798,7 @@ def save_mouse_config(automations: list[dict[str, object]]) -> None:
         shortcut = canonical_shortcut(str(item.get("shortcut", "")))
         clean_automations.append(
             {
+                "id": unique_automation_id(item.get("id", ""), used_ids),
                 "name": name,
                 "shortcut": shortcut,
                 "debug": bool(item.get("debug", False)),
@@ -746,6 +809,7 @@ def save_mouse_config(automations: list[dict[str, object]]) -> None:
     with MOUSE_SEQUENCE_FILE.open("w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=2, ensure_ascii=False)
         handle.write("\n")
+    return clean_automations
 
 
 def unique_automation_name(
@@ -828,8 +892,9 @@ def emergency_desktop_id() -> str:
     return "wayland-automation-emergency-f12.desktop"
 
 
-def mouse_sequence_desktop_id(index: int) -> str:
-    return f"wayland-automation-mouse-sequence-{index}.desktop"
+def mouse_sequence_desktop_id(automation_id: str) -> str:
+    safe = clean_automation_id(automation_id) or f"auto-{uuid.uuid4().hex[:12]}"
+    return f"input-pilot-automation-{safe}.desktop"
 
 
 def folder_template_desktop_id(index: int) -> str:
@@ -895,11 +960,11 @@ def write_dialog_desktop_file(function_key: str, target: str) -> str:
     return desktop_id
 
 
-def write_mouse_sequence_desktop_file(index: int, name: str) -> str:
-    desktop_id = mouse_sequence_desktop_id(index)
+def write_mouse_sequence_desktop_file(automation_id: str, name: str) -> str:
+    desktop_id = mouse_sequence_desktop_id(automation_id)
     desktop_path = Path.home() / ".local/share/applications" / desktop_id
     desktop_path.parent.mkdir(parents=True, exist_ok=True)
-    command = f"{MOUSE_SEQUENCE_RUNNER} --index {index}"
+    command = f"{MOUSE_SEQUENCE_RUNNER} --id {shlex.quote(automation_id)}"
     desktop_path.write_text(
         "\n".join(
             [
@@ -960,8 +1025,8 @@ def write_emergency_desktop_file() -> str:
             [
                 "[Desktop Entry]",
                 "Type=Application",
-                "Name=Abort Input Pilot template click",
-                "Comment=Emergency stop for Input Pilot template clicking",
+                "Name=Abort Input Pilot automation",
+                "Comment=Emergency stop for running Input Pilot actions",
                 f"Exec={ABORT_CLICK}",
                 "Icon=process-stop",
                 "Terminal=false",
@@ -1289,11 +1354,14 @@ def register_emergency_shortcut() -> None:
 def register_mouse_sequence_shortcut(index: int, automation: dict[str, object]) -> None:
     shortcut = str(automation.get("shortcut", ""))
     name = str(automation.get("name", "")).strip() or f"Automation {index}"
+    automation_id = clean_automation_id(automation.get("id", ""))
+    if not automation_id:
+        automation_id = f"auto-{index}"
     shortcut = canonical_shortcut(shortcut)
     if not shortcut:
         return
     modifier, function_key = parse_shortcut(shortcut)
-    desktop_id = write_mouse_sequence_desktop_file(index, name)
+    desktop_id = write_mouse_sequence_desktop_file(automation_id, name)
     shortcut_name = f"Run Input Pilot automation {name}"
     codes = key_codes_for(modifier, function_key)
 
@@ -1555,6 +1623,10 @@ def unregister_mouse_sequence_shortcuts() -> None:
         path.name
         for path in applications_dir.glob("wayland-automation-mouse-sequence-*.desktop")
     )
+    desktop_ids.update(
+        path.name
+        for path in applications_dir.glob("input-pilot-automation-*.desktop")
+    )
     for desktop_id in desktop_ids:
         unregister_mouse_sequence_desktop_id(desktop_id)
 
@@ -1644,9 +1716,7 @@ def unregister_emergency_shortcut() -> None:
 
 def disable_legacy_shortcuts() -> None:
     legacy_desktop_ids = [
-        "codex-open-downloads.desktop",
         "wayland-automation-open-downloads.desktop",
-        "wayland-automation-open-nextcloud-files.desktop",
     ]
     for desktop_id in legacy_desktop_ids:
         if shutil.which("busctl"):
@@ -1792,6 +1862,24 @@ def make_item(label: str, callback) -> Gtk.MenuItem:
     return item
 
 
+def apply_window_icon() -> None:
+    GLib.set_prgname(DESKTOP_APP_ID)
+    try:
+        Gdk.set_program_class(DESKTOP_APP_ID)
+    except AttributeError:
+        pass
+    if not APP_ICON.is_file():
+        return
+    try:
+        Gtk.Window.set_default_icon_from_file(str(APP_ICON))
+    except GLib.Error:
+        pass
+
+
+def apply_indicator_icon(indicator) -> None:
+    indicator.set_icon_full("preferences-desktop-keyboard", APP_NAME)
+
+
 class AutomationTray:
     def __init__(self, template: Path, ydotool_socket: str | None) -> None:
         self.template = template
@@ -1804,7 +1892,7 @@ class AutomationTray:
             AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
         )
         self.indicator.set_title(APP_NAME)
-        self.indicator.set_icon_full("preferences-desktop-keyboard", APP_NAME)
+        apply_indicator_icon(self.indicator)
         self.indicator.set_label("IP", "IP")
         self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
         self.indicator.set_menu(self.build_menu())
@@ -1851,9 +1939,6 @@ class AutomationTray:
         menu.show()
         return menu
 
-    def open_downloads(self, _item: Gtk.MenuItem) -> None:
-        run_detached([str(OPEN_DOWNLOADS)])
-
     def click_template(self, _item: Gtk.MenuItem) -> None:
         if not self.template.exists():
             notify(
@@ -1878,14 +1963,15 @@ class AutomationTray:
             if response not in {Gtk.ResponseType.OK, Gtk.ResponseType.APPLY}:
                 break
             automations = dialog.automations()
-            save_mouse_config(automations)
+            automations = save_mouse_config(automations)
+            dialog.set_automations(automations)
             register_mouse_sequence_shortcuts(automations)
             notify(
                 APP_NAME,
                 f"{len(automations)} Input-Automationen gespeichert. Trigger laufen über Input Pilot.",
             )
             if response == Gtk.ResponseType.APPLY:
-                command = [str(MOUSE_SEQUENCE_RUNNER), "--index", str(dialog.selected_index())]
+                command = [str(MOUSE_SEQUENCE_RUNNER), "--id", dialog.selected_id()]
                 if self.ydotool_socket:
                     command.extend(["--ydotool-socket", self.ydotool_socket])
                 run_detached(command)
@@ -1948,6 +2034,10 @@ class MousemoveConfigDialog(Gtk.Dialog):
     ROW_DND_TARGETS = [
         Gtk.TargetEntry.new("text/plain", Gtk.TargetFlags.SAME_APP, 0)
     ]
+    PATH_DND_TARGETS = [
+        Gtk.TargetEntry.new("text/uri-list", 0, 0),
+        Gtk.TargetEntry.new("text/plain", 0, 1),
+    ]
     SIDEBAR_DND_TARGETS = [
         Gtk.TargetEntry.new("text/plain", Gtk.TargetFlags.SAME_APP, 1)
     ]
@@ -1992,6 +2082,14 @@ class MousemoveConfigDialog(Gtk.Dialog):
         ("previous-node-failed", "Previous node failed"),
         ("previous-node-succeeded", "Previous node succeeded"),
         ("always", "Always"),
+    ]
+    MATCH_OPTIONS = [
+        ("best", "Best"),
+        ("rightmost", "Rightmost"),
+        ("middle", "Middle"),
+        ("leftmost", "Leftmost"),
+        ("topmost", "Topmost"),
+        ("bottommost", "Bottommost"),
     ]
 
     def __init__(self, automations: list[dict[str, object]]) -> None:
@@ -2275,6 +2373,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
     ) -> list[dict[str, object]]:
         normalized = []
         used_names: set[str] = set()
+        used_ids: set[str] = set()
         for index, automation in enumerate(automations, start=1):
             if not isinstance(automation, dict):
                 continue
@@ -2285,6 +2384,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
             )
             normalized.append(
                 {
+                    "id": unique_automation_id(automation.get("id", ""), used_ids),
                     "name": name,
                     "shortcut": canonical_shortcut(str(automation.get("shortcut", ""))),
                     "debug": bool(automation.get("debug", False)),
@@ -2293,7 +2393,13 @@ class MousemoveConfigDialog(Gtk.Dialog):
             )
         if not normalized:
             normalized.append(
-                {"name": "Automation 1", "shortcut": "", "debug": False, "steps": []}
+                {
+                    "id": unique_automation_id("", used_ids),
+                    "name": "Automation 1",
+                    "shortcut": "",
+                    "debug": False,
+                    "steps": [],
+                }
             )
         return normalized
 
@@ -2386,9 +2492,12 @@ class MousemoveConfigDialog(Gtk.Dialog):
                 child.set_text(entry.get_text() or f"Automation {self.current_index + 1}")
                 break
     def on_copy_command(self, _button: Gtk.Button) -> None:
+        self.save_current_automation()
         clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
-        name = self.name_entry.get_text().strip() or f"Automation {self.current_index + 1}"
-        command = f"{shlex.quote(str(MOUSE_SEQUENCE_RUNNER))} --name {shlex.quote(name)}"
+        command = (
+            f"{shlex.quote(str(MOUSE_SEQUENCE_RUNNER))} "
+            f"--id {shlex.quote(self.selected_id())}"
+        )
         clipboard.set_text(command, -1)
 
     def collapse_sidebar(self, _button: Gtk.Button) -> None:
@@ -2487,7 +2596,16 @@ class MousemoveConfigDialog(Gtk.Dialog):
             )
             if self.name_entry.get_text().strip() != name:
                 self.name_entry.set_text(name)
+            automation_id = unique_automation_id(
+                self.automation_state[self.current_index].get("id", ""),
+                {
+                    str(item.get("id", ""))
+                    for index, item in enumerate(self.automation_state)
+                    if index != self.current_index and isinstance(item, dict)
+                },
+            )
             self.automation_state[self.current_index] = {
+                "id": automation_id,
                 "name": name,
                 "shortcut": self.shortcut(),
                 "debug": self.debug_check.get_active(),
@@ -2550,6 +2668,9 @@ class MousemoveConfigDialog(Gtk.Dialog):
                         str(step.get("condition", "")),
                         str(step.get("condition_template", "")),
                         bool(step.get("animate_mouse", False)),
+                        str(step.get("match_choice", "best")),
+                        bool(step.get("if_jump_enabled", False)),
+                        int(float(step.get("if_jump_step", 1) or 1)),
                     )
         if not self.rows:
             self.add_row_values("", "", "left", "", "", 0, 0, 0.0)
@@ -2571,7 +2692,16 @@ class MousemoveConfigDialog(Gtk.Dialog):
         )
         if self.name_entry.get_text().strip() != name:
             self.name_entry.set_text(name)
+        automation_id = unique_automation_id(
+            self.automation_state[self.current_index].get("id", ""),
+            {
+                str(item.get("id", ""))
+                for index, item in enumerate(self.automation_state)
+                if index != self.current_index and isinstance(item, dict)
+            },
+        )
         self.automation_state[self.current_index] = {
+            "id": automation_id,
             "name": name,
             "shortcut": self.shortcut(),
             "debug": self.debug_check.get_active(),
@@ -2600,6 +2730,14 @@ class MousemoveConfigDialog(Gtk.Dialog):
         )
         self.automation_state.append(
             {
+                "id": unique_automation_id(
+                    "",
+                    {
+                        str(item.get("id", ""))
+                        for item in self.automation_state
+                        if isinstance(item, dict)
+                    },
+                ),
                 "name": name,
                 "shortcut": "",
                 "debug": False,
@@ -2628,7 +2766,13 @@ class MousemoveConfigDialog(Gtk.Dialog):
             return
         if len(self.automation_state) <= 1:
             self.automation_state = [
-                {"name": "Automation 1", "shortcut": "", "debug": False, "steps": []}
+                {
+                    "id": unique_automation_id("", set()),
+                    "name": "Automation 1",
+                    "shortcut": "",
+                    "debug": False,
+                    "steps": [],
+                }
             ]
             self.refresh_sidebar(0)
             self.load_automation(0)
@@ -2652,6 +2796,14 @@ class MousemoveConfigDialog(Gtk.Dialog):
             used_names,
             "Automation Copy",
         )
+        duplicate["id"] = unique_automation_id(
+            "",
+            {
+                str(item.get("id", ""))
+                for item in self.automation_state
+                if isinstance(item, dict)
+            },
+        )
         duplicate["shortcut"] = ""
         self.automation_state.append(duplicate)
         self.refresh_sidebar(len(self.automation_state) - 1)
@@ -2660,6 +2812,30 @@ class MousemoveConfigDialog(Gtk.Dialog):
 
     def selected_index(self) -> int:
         return self.current_index + 1
+
+    def selected_id(self) -> str:
+        if 0 <= self.current_index < len(self.automation_state):
+            automation_id = clean_automation_id(
+                self.automation_state[self.current_index].get("id", "")
+            )
+            if automation_id:
+                return automation_id
+        return f"auto-{self.current_index + 1}"
+
+    def set_automations(self, automations: list[dict[str, object]]) -> None:
+        active_id = self.selected_id()
+        self.automation_state = self.normalize_automations(automations)
+        fallback_index = min(self.current_index, len(self.automation_state) - 1)
+        active_index = next(
+            (
+                index
+                for index, item in enumerate(self.automation_state)
+                if clean_automation_id(item.get("id", "")) == active_id
+            ),
+            fallback_index,
+        )
+        self.refresh_sidebar(active_index)
+        self.load_automation(active_index)
 
     def shortcut(self) -> str:
         key_index = self.key_combo.get_active()
@@ -2693,6 +2869,9 @@ class MousemoveConfigDialog(Gtk.Dialog):
         condition: str = "",
         condition_template: str = "",
         animate_mouse: bool = False,
+        match_choice: str = "best",
+        if_jump_enabled: bool = False,
+        if_jump_step: int = 1,
     ) -> None:
         action = action.strip().lower()
         button = button.strip().lower()
@@ -2701,6 +2880,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
         input_type = input_type.strip().lower()
         condition = condition.strip().lower()
         condition_template = condition_template.strip()
+        match_choice = match_choice.strip().lower()
         if condition == "screenshot-missing":
             condition = "previous-node-failed"
         elif condition == "screenshot-found":
@@ -2745,8 +2925,11 @@ class MousemoveConfigDialog(Gtk.Dialog):
             input_type = "keys"
         if condition not in {value for value, _label in self.CONDITION_OPTIONS}:
             condition = "previous-node-failed"
+        if match_choice not in {value for value, _label in self.MATCH_OPTIONS}:
+            match_choice = "best"
         indent = max(0, min(int(indent or 0), self.MAX_BLOCK_INDENT))
         drag_steps = max(1, min(int(drag_steps or 2), 200))
+        if_jump_step = max(1, min(int(if_jump_step or 1), 999))
         target_template = target
         if action in {"click", "move"} and target_type == "template" and not target_template:
             target_template = template
@@ -2843,6 +3026,23 @@ class MousemoveConfigDialog(Gtk.Dialog):
         condition_combo.set_no_show_all(True)
         condition_slot.pack_start(condition_combo, False, False, 0)
 
+        if_jump_combo = Gtk.ComboBoxText()
+        if_jump_combo.append("next", "Next node")
+        if_jump_combo.append("step", "Run block, then jump to step")
+        if_jump_combo.set_active_id("step" if if_jump_enabled else "next")
+        if_jump_combo.set_size_request(210, -1)
+        if_jump_combo.set_tooltip_text("What to do after this If block finishes")
+        if_jump_combo.set_no_show_all(True)
+        condition_slot.pack_start(if_jump_combo, False, False, 0)
+
+        if_jump_spin = Gtk.SpinButton.new_with_range(1, 999, 1)
+        if_jump_spin.set_value(if_jump_step)
+        if_jump_spin.set_size_request(72, -1)
+        if_jump_spin.set_tooltip_text("Step number to continue with after the If block")
+        if_jump_spin.set_no_show_all(True)
+        if_jump_spin.connect("focus-in-event", self.select_row_by_widget)
+        condition_slot.pack_start(if_jump_spin, False, False, 0)
+
         condition_entry = Gtk.Entry()
         condition_entry.set_text(condition_template)
         condition_entry.set_placeholder_text("")
@@ -2877,11 +3077,11 @@ class MousemoveConfigDialog(Gtk.Dialog):
         source_slot.pack_start(source_type_combo, False, False, 0)
 
         template_entry = Gtk.Entry()
-        template_entry.set_text(template)
+        set_path_entry_value(template_entry, template)
         template_entry.set_placeholder_text("Source template")
         template_entry.set_hexpand(True)
         template_entry.set_no_show_all(True)
-        template_entry.connect("focus-in-event", self.select_row_by_widget)
+        self.configure_template_path_entry(template_entry)
         source_slot.pack_start(template_entry, True, True, 0)
 
         browse_button = Gtk.Button(label="...")
@@ -2952,17 +3152,26 @@ class MousemoveConfigDialog(Gtk.Dialog):
         target_slot.pack_start(target_type_combo, False, False, 0)
 
         target_entry = Gtk.Entry()
-        target_entry.set_text(target_template)
-        target_entry.set_placeholder_text("Target template")
+        set_path_entry_value(target_entry, target_template)
+        target_entry.set_placeholder_text("Target screenshot")
         target_entry.set_hexpand(True)
         target_entry.set_no_show_all(True)
-        target_entry.connect("focus-in-event", self.select_row_by_widget)
+        self.configure_template_path_entry(target_entry)
         target_slot.pack_start(target_entry, True, True, 0)
 
         target_browse_button = Gtk.Button(label="...")
         target_browse_button.set_no_show_all(True)
         target_browse_button.connect("clicked", self.choose_template, target_entry)
         target_slot.pack_start(target_browse_button, False, False, 0)
+
+        match_combo = Gtk.ComboBoxText()
+        for value, label in self.MATCH_OPTIONS:
+            match_combo.append(value, label)
+        match_combo.set_active_id(match_choice)
+        match_combo.set_size_request(118, -1)
+        match_combo.set_tooltip_text("Which matching screenshot instance to use")
+        match_combo.set_no_show_all(True)
+        target_slot.pack_start(match_combo, False, False, 0)
 
         x_spin = Gtk.SpinButton.new_with_range(0, 20000, 1)
         x_spin.set_value(max(x, 0))
@@ -3017,6 +3226,8 @@ class MousemoveConfigDialog(Gtk.Dialog):
             "details": details_box,
             "condition_slot": condition_slot,
             "condition": condition_combo,
+            "if_jump_mode": if_jump_combo,
+            "if_jump_step": if_jump_spin,
             "condition_template": condition_entry,
             "condition_button": condition_button,
             "source_slot": source_slot,
@@ -3031,6 +3242,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
             "template_button": browse_button,
             "target": target_entry,
             "target_button": target_browse_button,
+            "match_choice": match_combo,
             "keys": keys_entry,
             "record_keys_button": record_keys_button,
             "text": text_entry,
@@ -3053,10 +3265,12 @@ class MousemoveConfigDialog(Gtk.Dialog):
         row_event.connect("drag-data-received", self.on_row_drag_data_received, row_data)
         action_combo.connect("changed", self.on_click_changed, row_data)
         condition_combo.connect("changed", self.on_click_changed, row_data)
+        if_jump_combo.connect("changed", self.on_click_changed, row_data)
         button_combo.connect("changed", self.on_click_changed, row_data)
         animate_mouse_check.connect("toggled", self.select_row_by_widget)
         source_type_combo.connect("changed", self.on_click_changed, row_data)
         target_type_combo.connect("changed", self.on_click_changed, row_data)
+        match_combo.connect("changed", self.select_row_by_widget)
         input_type_combo.connect("changed", self.on_click_changed, row_data)
         for widget in (
             row_event,
@@ -3065,6 +3279,8 @@ class MousemoveConfigDialog(Gtk.Dialog):
             block_bar,
             action_combo,
             condition_combo,
+            if_jump_combo,
+            if_jump_spin,
             condition_entry,
             condition_button,
             button_combo,
@@ -3076,6 +3292,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
             browse_button,
             target_entry,
             target_browse_button,
+            match_combo,
             keys_entry,
             record_keys_button,
             text_entry,
@@ -3400,6 +3617,8 @@ class MousemoveConfigDialog(Gtk.Dialog):
         animate_mouse_check = row_data.get("animate_mouse")
         condition_slot = row_data.get("condition_slot")
         condition_combo = row_data.get("condition")
+        if_jump_combo = row_data.get("if_jump_mode")
+        if_jump_spin = row_data.get("if_jump_step")
         condition_entry = row_data.get("condition_template")
         condition_button = row_data.get("condition_button")
         source_slot = row_data.get("source_slot")
@@ -3412,6 +3631,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
         template_button = row_data.get("template_button")
         target_entry = row_data.get("target")
         target_button = row_data.get("target_button")
+        match_combo = row_data.get("match_choice")
         keys_entry = row_data.get("keys")
         record_keys_button = row_data.get("record_keys_button")
         text_entry = row_data.get("text")
@@ -3442,6 +3662,8 @@ class MousemoveConfigDialog(Gtk.Dialog):
         for widget in (
             condition_slot,
             condition_combo,
+            if_jump_combo,
+            if_jump_spin,
             condition_entry,
             condition_button,
             source_slot,
@@ -3455,6 +3677,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
             template_button,
             target_entry,
             target_button,
+            match_combo,
             keys_entry,
             record_keys_button,
             text_entry,
@@ -3505,9 +3728,15 @@ class MousemoveConfigDialog(Gtk.Dialog):
             if isinstance(input_type_combo, Gtk.Widget):
                 input_type_combo.show()
         elif action == "if":
-            for widget in (condition_slot, condition_combo):
+            for widget in (condition_slot, condition_combo, if_jump_combo):
                 if isinstance(widget, Gtk.Widget):
                     widget.show()
+            if (
+                isinstance(if_jump_combo, Gtk.ComboBoxText)
+                and if_jump_combo.get_active_id() == "step"
+                and isinstance(if_jump_spin, Gtk.Widget)
+            ):
+                if_jump_spin.show()
 
         if action == "drag" and source_type == "template":
             for widget in (template_entry, template_button):
@@ -3519,7 +3748,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
                     widget.show()
 
         if action in {"click", "drag", "move"} and target_type == "template":
-            for widget in (target_entry, target_button):
+            for widget in (target_entry, target_button, match_combo):
                 if isinstance(widget, Gtk.Widget):
                     widget.show()
         if action in {"click", "drag", "move"} and target_type == "position":
@@ -3631,6 +3860,55 @@ class MousemoveConfigDialog(Gtk.Dialog):
         if self.selected_row in self.rows:
             self.remove_row_data(self.selected_row)
 
+    def configure_template_path_entry(self, entry: Gtk.Entry) -> None:
+        entry.drag_dest_set(
+            Gtk.DestDefaults.ALL,
+            self.PATH_DND_TARGETS,
+            Gdk.DragAction.COPY,
+        )
+        entry.connect("focus-in-event", self.on_template_path_focus_in)
+        entry.connect("focus-out-event", self.on_template_path_focus_out)
+        entry.connect("drag-data-received", self.on_template_path_dropped)
+
+    def on_template_path_focus_in(self, entry: Gtk.Entry, *_args) -> bool:
+        self.select_row_by_widget(entry)
+        full_path = path_entry_value(entry)
+        if full_path:
+            set_path_entry_value(entry, full_path, compact=False)
+        return False
+
+    def on_template_path_focus_out(self, entry: Gtk.Entry, *_args) -> bool:
+        set_path_entry_value(entry, path_entry_value(entry), compact=True)
+        return False
+
+    def on_template_path_dropped(
+        self,
+        entry: Gtk.Entry,
+        context,
+        _x: int,
+        _y: int,
+        selection_data,
+        _info: int,
+        time_: int,
+    ) -> None:
+        path = self.path_from_drop(selection_data)
+        if path:
+            set_path_entry_value(entry, path)
+            self.select_row_by_widget(entry)
+        Gtk.drag_finish(context, bool(path), False, time_)
+
+    def path_from_drop(self, selection_data) -> str:
+        for uri in selection_data.get_uris() or []:
+            file_path = Gio.File.new_for_uri(uri).get_path()
+            if file_path:
+                return file_path
+        text = selection_data.get_text() or ""
+        text = text.strip()
+        if text.startswith("file://"):
+            file_path = Gio.File.new_for_uri(text).get_path()
+            return file_path or ""
+        return text.splitlines()[0].strip() if text else ""
+
     def choose_template(self, _button: Gtk.Button, entry: Gtk.Entry) -> None:
         chooser = Gtk.FileChooserDialog(
             title="Screenshot Template wählen",
@@ -3653,7 +3931,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
         if response == Gtk.ResponseType.OK:
             filename = chooser.get_filename()
             if filename:
-                entry.set_text(filename)
+                set_path_entry_value(entry, filename)
         chooser.destroy()
 
     def steps(self) -> list[dict[str, object]]:
@@ -3675,6 +3953,9 @@ class MousemoveConfigDialog(Gtk.Dialog):
             target_type_combo = row["target_type"]
             input_type_combo = row["input_type"]
             condition_combo = row["condition"]
+            if_jump_combo = row["if_jump_mode"]
+            if_jump_spin = row["if_jump_step"]
+            match_combo = row["match_choice"]
             wait_spin = row["wait"]
             if not (
                 isinstance(template_entry, Gtk.Entry)
@@ -3693,6 +3974,9 @@ class MousemoveConfigDialog(Gtk.Dialog):
                 and isinstance(target_type_combo, Gtk.ComboBoxText)
                 and isinstance(input_type_combo, Gtk.ComboBoxText)
                 and isinstance(condition_combo, Gtk.ComboBoxText)
+                and isinstance(if_jump_combo, Gtk.ComboBoxText)
+                and isinstance(if_jump_spin, Gtk.SpinButton)
+                and isinstance(match_combo, Gtk.ComboBoxText)
                 and isinstance(wait_spin, Gtk.SpinButton)
             ):
                 continue
@@ -3702,8 +3986,9 @@ class MousemoveConfigDialog(Gtk.Dialog):
             target_type = target_type_combo.get_active_id() or "template"
             input_type = input_type_combo.get_active_id() or "keys"
             condition = condition_combo.get_active_id() or "previous-node-failed"
-            source_template = template_entry.get_text().strip()
-            target_template = target_entry.get_text().strip()
+            match_choice = match_combo.get_active_id() or "best"
+            source_template = path_entry_value(template_entry)
+            target_template = path_entry_value(target_entry)
             keys = keys_entry.get_text().strip()
             text = text_entry.get_text()
             template = source_template
@@ -3758,6 +4043,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
                     "condition_template": "",
                     "animate_mouse": animate_mouse_check.get_active()
                     and action in {"click", "drag", "move"},
+                    "match_choice": match_choice,
                     "keys": keys,
                     "text": text,
                     "indent": int(row.get("indent", 0) or 0),
@@ -3766,6 +4052,10 @@ class MousemoveConfigDialog(Gtk.Dialog):
                     "x": x_spin.get_value_as_int(),
                     "y": y_spin.get_value_as_int(),
                     "drag_steps": drag_steps_spin.get_value_as_int(),
+                    "if_jump_enabled": (
+                        if_jump_combo.get_active_id() == "step" and action == "if"
+                    ),
+                    "if_jump_step": if_jump_spin.get_value_as_int(),
                     "click": click,
                     "wait": wait_spin.get_value(),
                     "note": note,
@@ -4437,7 +4727,6 @@ def main() -> int:
 
     if args.check:
         print("GTK/AppIndicator imports: ok")
-        print(f"open downloads script: {OPEN_DOWNLOADS}")
         print(f"click image script: {CLICK_IMAGE}")
         print(f"template: {args.template}")
         print(f"ydotool socket: {args.ydotool_socket}")
@@ -4456,6 +4745,7 @@ def main() -> int:
     signal.signal(signal.SIGINT, stop_tray)
     signal.signal(signal.SIGTERM, stop_tray)
 
+    apply_window_icon()
     apply_shortcuts(load_shortcuts())
     tray = AutomationTray(args.template.expanduser(), args.ydotool_socket)
     Gtk.main()

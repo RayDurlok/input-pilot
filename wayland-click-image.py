@@ -526,12 +526,51 @@ def image_matches_output(
     return width == output.width and height == output.height
 
 
+def choose_template_match(cv2, result, threshold: float, match_choice: str) -> tuple[float, tuple[int, int]]:
+    _, max_score, _, max_loc = cv2.minMaxLoc(result)
+    if match_choice == "best":
+        return max_score, max_loc
+
+    near_best_threshold = max(threshold, max_score - 0.03)
+    ys, xs = (result >= near_best_threshold).nonzero()
+    if len(xs) == 0:
+        return max_score, max_loc
+
+    candidates = [
+        (int(x), int(y), float(result[int(y), int(x)]))
+        for x, y in zip(xs, ys)
+    ]
+    if match_choice == "rightmost":
+        chosen = max(candidates, key=lambda item: (item[0], item[2]))
+    elif match_choice == "leftmost":
+        chosen = min(candidates, key=lambda item: (item[0], -item[2]))
+    elif match_choice == "topmost":
+        chosen = min(candidates, key=lambda item: (item[1], -item[2]))
+    elif match_choice == "bottommost":
+        chosen = max(candidates, key=lambda item: (item[1], item[2]))
+    elif match_choice == "middle":
+        center_x = (result.shape[1] - 1) / 2
+        center_y = (result.shape[0] - 1) / 2
+        chosen = min(
+            candidates,
+            key=lambda item: (
+                ((item[0] - center_x) ** 2) + ((item[1] - center_y) ** 2),
+                -item[2],
+            ),
+        )
+    else:
+        return max_score, max_loc
+    return chosen[2], (chosen[0], chosen[1])
+
+
 def match_template_on_screen(
     cv2,
     screen,
     template,
     screen_scope: str,
     primary: ScreenOutput | None,
+    threshold: float,
+    match_choice: str,
     current_monitor_image: bool = False,
 ) -> tuple[float, int, int, int, int, str]:
     search_offset_x = 0
@@ -565,7 +604,7 @@ def match_template_on_screen(
         raise SystemExit("Template image is larger than the screen screenshot")
 
     result = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
-    _, max_score, _, max_loc = cv2.minMaxLoc(result)
+    max_score, max_loc = choose_template_match(cv2, result, threshold, match_choice)
 
     center_x = int(search_offset_x + max_loc[0] + template_w / 2)
     center_y = int(search_offset_y + max_loc[1] + template_h / 2)
@@ -604,6 +643,7 @@ def cached_template_match(
     outputs: list[ScreenOutput],
     primary: ScreenOutput | None,
     screen_scope: str,
+    match_choice: str,
     tmp_dir: Path,
 ) -> tuple[float, int, int, int, int, str, str] | None:
     cache_key = str(template_path)
@@ -614,6 +654,8 @@ def cached_template_match(
         TEMPLATE_POSITION_CACHE.pop(cache_key, None)
         return None
     if cache_entry.get("screen_scope") != screen_scope:
+        return None
+    if cache_entry.get("match_choice", "best") != match_choice:
         return None
 
     try:
@@ -666,12 +708,14 @@ def cached_template_match(
 def update_template_position_cache(
     template_path: Path,
     screen_scope: str,
+    match_choice: str,
     center_x: int,
     center_y: int,
 ) -> None:
     TEMPLATE_POSITION_CACHE[str(template_path)] = {
         "token": template_cache_token(template_path),
         "screen_scope": screen_scope,
+        "match_choice": match_choice,
         "center_x": int(center_x),
         "center_y": int(center_y),
         "updated_at": time.monotonic(),
@@ -859,6 +903,12 @@ def parse_args() -> argparse.Namespace:
         default="primary",
         help="Screen area to search for the template (default: primary).",
     )
+    parser.add_argument(
+        "--match-choice",
+        choices=("best", "rightmost", "leftmost", "topmost", "bottommost", "middle"),
+        default="best",
+        help="Which near-best template match to use when multiple matches exist.",
+    )
     return parser.parse_args()
 
 
@@ -892,6 +942,7 @@ def run_template_action(args: argparse.Namespace, cv2=None) -> TemplateActionRes
                 outputs,
                 primary,
                 args.screen_scope,
+                args.match_choice,
                 tmp_path,
             )
 
@@ -948,6 +999,8 @@ def run_template_action(args: argparse.Namespace, cv2=None) -> TemplateActionRes
                     template,
                     args.screen_scope,
                     primary,
+                    args.threshold,
+                    args.match_choice,
                     current_monitor_image=current_monitor_image,
                 )
             )
@@ -971,6 +1024,8 @@ def run_template_action(args: argparse.Namespace, cv2=None) -> TemplateActionRes
                         template,
                         args.screen_scope,
                         primary,
+                        args.threshold,
+                        args.match_choice,
                         current_monitor_image=False,
                     )
                 )
@@ -989,6 +1044,7 @@ def run_template_action(args: argparse.Namespace, cv2=None) -> TemplateActionRes
         update_template_position_cache(
             template_path,
             args.screen_scope,
+            args.match_choice,
             center_x,
             center_y,
         )

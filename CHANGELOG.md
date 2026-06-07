@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Project packaging
+
+- **Installer**: added `install.sh` as the main setup entry point. It checks
+  runtime commands and Python modules, creates the `input-pilot` launcher in
+  `~/.local/bin`, and installs desktop/autostart entries.
+- **Uninstaller**: added `uninstall.sh` to remove the launcher and desktop
+  entries while keeping user configuration and logs.
+- **README refresh**: installation now documents the tray launcher and
+  persistent `ydotoold` setup instead of the older one-off shortcut helpers.
+- **Legacy helper cleanup**: removed old one-off F1/Alt+F7 shortcut installer
+  scripts now that shortcuts are configured through the tray UI.
+
 ### Hotkeys dialog — editable shortcut list
 
 - **Replaced fixed F1–F11 grid** with a scrollable list of rows; each row has
@@ -52,12 +64,16 @@
   a small popover with a text area for freeform notes. Rows with a note highlight
   the number in the accent colour and show the note text as a tooltip. Notes are
   persisted with the automation.
-- **`--name` CLI flag**: `input-pilot-mouse-sequence.py` now accepts
-  `--name <automation-name>` (case-insensitive) as an alternative to `--index`.
-  The two flags are mutually exclusive; omitting both defaults to index 1.
+- **CLI trigger flags**: `input-pilot-mouse-sequence.py` supports stable
+  `--id <automation-id>` triggers plus backwards-compatible `--name` and
+  `--index` lookup. Omitting all three defaults to index 1.
 - **Copy trigger command**: a `Copy trigger command` button in the Trigger row
-  copies the ready-to-run command (`input-pilot-mouse-sequence.py --name "…"`)
-  to the clipboard.
+  copies the ready-to-run command to the clipboard.
+- **Stable automation IDs**: input automations now store an internal `id`.
+  Copied trigger commands and KDE shortcut desktop entries use
+  `input-pilot-mouse-sequence.py --id ...`, so commands keep working after an
+  automation is renamed or reordered. `--name` and `--index` remain supported
+  for backwards compatibility.
 - **Desktop registration rename**: KDE GlobalAccel entries are now labelled
   `Run Input Pilot automation <name>` instead of
   `Run Input Pilot mousemove sequence <name>`.
@@ -71,6 +87,36 @@
 - **KWin template cache**: template matching now reads KWin `ScreenShot2` raw
   pixel captures directly and caches verified template positions. Repeated
   clicks first check a small cached area before falling back to a full search.
+- **Template match selection**: screenshot target nodes can choose which
+  near-best match to use when the same template appears multiple times on
+  screen: `Best`, `Rightmost`, `Middle`, `Leftmost`, `Topmost`, or
+  `Bottommost`.
+- **If jump recovery loops**: `If` nodes default to `Next node` after running
+  their child nodes, or can jump to a configured step number. This supports
+  recovery flows such as “if the previous screenshot was missing, click setup
+  buttons, then restart at step 1”. A loop guard stops the run after 3 jumps.
+- **F12 aborts input automations**: the emergency shortcut now stops running
+  input automation sequences as well as template-click actions, and releases
+  mouse buttons.
+- **Faster failed template checks**: when the persistent template server reports
+  `Match below threshold`, Input Pilot no longer repeats the same search through
+  the slower fallback path.
+- **Sequence lock fix**: a second trigger while an automation is already running
+  no longer removes the active run's lock file.
+- **Screenshot path fields**: source/target screenshot fields now display long
+  paths as compact tail paths such as `.../Screenshots/FX/button.png`, keep the
+  full path internally, and accept files dropped directly from Dolphin.
+- **Window icon**: Input Pilot dialogs now use the local
+  `InputPilotIconRounded.png` as their window icon while the tray keeps the
+  simpler system keyboard icon.
+
+### Known follow-ups
+
+- Hotkeys dialog: manually typed unknown modifier tokens are currently
+  normalized away (`Ctrl+Foo+2` becomes `Ctrl+2`) instead of being reported as
+  invalid.
+- Hotkeys dialog: rows with a target but an empty shortcut are silently skipped
+  on save; this should become an explicit warning.
 
 ### Input Automations — UI overhaul
 

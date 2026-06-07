@@ -22,9 +22,13 @@ CLICK_SCRIPT = SCRIPT_DIR / "wayland-click-image.py"
 CONFIG_FILE = Path.home() / ".config/wayland-automation/mousemove-sequence.json"
 DEFAULT_YDOTOOL_SOCKET = "/tmp/ydotool_socket"
 TEMPLATE_CLICK_RE = re.compile(r"\bclick_x=(-?\d+)\s+click_y=(-?\d+)\b")
+MATCH_CHOICES = {"best", "rightmost", "leftmost", "topmost", "bottommost", "middle"}
+AUTOMATION_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{5,63}$")
 STATE_DIR = Path.home() / ".local/state/wayland-automation"
 SEQUENCE_LOG_FILE = STATE_DIR / "mouse-sequence.log"
+SEQUENCE_ABORT_FILE = STATE_DIR / "mouse-sequence.abort"
 SEQUENCE_LOCK_MAX_AGE = 30.0
+MAX_SEQUENCE_JUMPS = 3
 MODIFIER_KEY_CODES = {
     "CTRL": 29,
     "CONTROL": 29,
@@ -116,6 +120,21 @@ def load_automation(config_file: Path, index: int) -> dict[str, object]:
     raise SystemExit(f"Mousemove config must contain automations or steps: {config_file}")
 
 
+def load_automations(config_file: Path) -> list[dict[str, object]]:
+    if not config_file.exists():
+        raise SystemExit(f"Config not found: {config_file}")
+    with config_file.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if isinstance(data, dict):
+        automations = data.get("automations")
+        if isinstance(automations, list):
+            return [item for item in automations if isinstance(item, dict)]
+        return [data]
+    if isinstance(data, list):
+        return [{"name": "Automation", "debug": False, "steps": data}]
+    raise SystemExit(f"Mousemove config must contain automations or steps: {config_file}")
+
+
 def load_steps(config_file: Path, index: int) -> list[dict[str, object]]:
     data = load_automation(config_file, index).get("steps", [])
     if not isinstance(data, list):
@@ -136,6 +155,22 @@ def log_sequence(message: str) -> None:
         handle.write(f"{timestamp} {message}\n")
 
 
+def sequence_abort_requested() -> bool:
+    return SEQUENCE_ABORT_FILE.exists()
+
+
+def ensure_sequence_not_aborted() -> None:
+    if sequence_abort_requested():
+        raise SystemExit("Input automation aborted")
+
+
+def interruptible_sleep(seconds: float) -> None:
+    deadline = time.monotonic() + max(seconds, 0.0)
+    while time.monotonic() < deadline:
+        ensure_sequence_not_aborted()
+        time.sleep(min(0.05, max(deadline - time.monotonic(), 0.0)))
+
+
 class SequenceRunLock:
     def __init__(self, index: int) -> None:
         self.path = STATE_DIR / f"mouse-sequence-{index}.lock"
@@ -154,9 +189,10 @@ class SequenceRunLock:
         return self
 
     def __exit__(self, _exc_type, _exc_value, _traceback):
-        if self.fd is not None:
-            os.close(self.fd)
-            self.fd = None
+        if self.fd is None:
+            return
+        os.close(self.fd)
+        self.fd = None
         self.path.unlink(missing_ok=True)
         log_sequence(f"sequence lock released path={self.path}")
 
@@ -178,11 +214,17 @@ def result_text(result: subprocess.CompletedProcess[str]) -> str:
     )
 
 
+def step_match_choice(step: dict[str, object]) -> str:
+    choice = str(step.get("match_choice", "best")).strip().lower()
+    return choice if choice in MATCH_CHOICES else "best"
+
+
 def run_template_command(
     command: list[str],
     debug: bool,
     not_found_message: str,
 ) -> subprocess.CompletedProcess[str]:
+    ensure_sequence_not_aborted()
     log_sequence(f"template_command start {' '.join(command)}")
     result = subprocess.run(
         command,
@@ -191,6 +233,7 @@ def run_template_command(
         stderr=subprocess.PIPE,
         text=True,
     )
+    ensure_sequence_not_aborted()
     log_sequence(f"template_command exit={result.returncode} {result_text(result).splitlines()[-1:]}")
     if result.returncode == 0:
         return result
@@ -214,7 +257,13 @@ def step_command(step: dict[str, object], ydotool_socket: str | None) -> list[st
         raise SystemExit(f"Template image not found: {template_path}")
 
     click = str(step.get("click", "left")).strip().lower()
-    command = [str(TEMPLATE_SERVER), str(template_path), "--no-return-cursor"]
+    command = [
+        str(TEMPLATE_SERVER),
+        str(template_path),
+        "--no-return-cursor",
+        "--match-choice",
+        step_match_choice(step),
+    ]
     if click == "hover":
         wait_seconds = float(step.get("wait", 0.0) or 0.0)
         command.extend(["--move-only", "--hold", str(max(wait_seconds, 0.25))])
@@ -235,11 +284,22 @@ def step_command(step: dict[str, object], ydotool_socket: str | None) -> list[st
     return command
 
 
-def move_to_template_command(template: str, ydotool_socket: str | None) -> list[str]:
+def move_to_template_command(
+    template: str,
+    ydotool_socket: str | None,
+    match_choice: str = "best",
+) -> list[str]:
     template_path = Path(template).expanduser()
     if not template_path.is_file():
         raise SystemExit(f"Template image not found: {template_path}")
-    command = [str(TEMPLATE_SERVER), str(template_path), "--no-return-cursor", "--move-only"]
+    command = [
+        str(TEMPLATE_SERVER),
+        str(template_path),
+        "--no-return-cursor",
+        "--move-only",
+        "--match-choice",
+        match_choice if match_choice in MATCH_CHOICES else "best",
+    ]
     if ydotool_socket:
         command.extend(["--ydotool-socket", ydotool_socket])
     return command
@@ -256,12 +316,15 @@ def run_ydotool(arguments: list[str], socket_path: str | None) -> None:
 
 
 def type_string(text: str, ydotool_socket: str | None) -> None:
+    ensure_sequence_not_aborted()
     if not text:
         raise SystemExit("Input string node is empty")
     run_ydotool(["type", "--key-delay=0", "--key-hold=1", "--", text], ydotool_socket)
+    ensure_sequence_not_aborted()
 
 
 def send_key_combo(combo: str, ydotool_socket: str | None) -> None:
+    ensure_sequence_not_aborted()
     parts = [part.strip().upper() for part in combo.split("+") if part.strip()]
     if not parts:
         raise SystemExit("Key combo node is empty")
@@ -280,6 +343,7 @@ def send_key_combo(combo: str, ydotool_socket: str | None) -> None:
     events.append(f"{key_code}:0")
     events.extend(f"{code}:0" for code in reversed(modifier_codes))
     run_ydotool(["key", *events], ydotool_socket)
+    ensure_sequence_not_aborted()
 
 
 def run_drag_step(step: dict[str, object], ydotool_socket: str | None, debug: bool) -> int:
@@ -302,7 +366,7 @@ def run_drag_step(step: dict[str, object], ydotool_socket: str | None, debug: bo
         raise SystemExit(f"Template image not found: {target_path}")
 
     source_result = run_template_command(
-        move_to_template_command(source, ydotool_socket),
+        move_to_template_command(source, ydotool_socket, step_match_choice(step)),
         debug,
         "Source screenshot couldn't be found on screen.",
     )
@@ -312,7 +376,7 @@ def run_drag_step(step: dict[str, object], ydotool_socket: str | None, debug: bo
     try:
         run_ydotool(["click", "0x40"], ydotool_socket)
         target_result = run_template_command(
-            move_to_template_command(target, ydotool_socket),
+            move_to_template_command(target, ydotool_socket, step_match_choice(step)),
             debug,
             "Target screenshot couldn't be found on screen.",
         )
@@ -344,7 +408,7 @@ def run_drag_to_position_step(
         raise SystemExit("Drag-to-position node has invalid coordinates") from exc
 
     source_result = run_template_command(
-        move_to_template_command(source, ydotool_socket),
+        move_to_template_command(source, ydotool_socket, step_match_choice(step)),
         debug,
         "Source screenshot couldn't be found on screen.",
     )
@@ -420,7 +484,7 @@ def move_to_step_position(
             raise SystemExit(f"{label} screenshot/template is empty")
         log_sequence(f"move_to_{role} template={template}")
         result = run_template_command(
-            move_to_template_command(template, ydotool_socket),
+            move_to_template_command(template, ydotool_socket, step_match_choice(step)),
             debug,
             f"{label} screenshot couldn't be found on screen.",
         )
@@ -462,11 +526,18 @@ def locate_template_position(
     ydotool_socket: str | None,
     debug: bool,
     not_found_message: str,
+    match_choice: str = "best",
 ) -> tuple[int, int] | None:
     template_path = Path(template).expanduser()
     if not template_path.is_file():
         raise SystemExit(f"Template image not found: {template_path}")
-    command = [str(TEMPLATE_SERVER), str(template_path), "--dry-run"]
+    command = [
+        str(TEMPLATE_SERVER),
+        str(template_path),
+        "--dry-run",
+        "--match-choice",
+        match_choice if match_choice in MATCH_CHOICES else "best",
+    ]
     if ydotool_socket:
         command.extend(["--ydotool-socket", ydotool_socket])
     result = run_template_command(command, debug, not_found_message)
@@ -502,6 +573,7 @@ def target_coordinates_for_drag(
         ydotool_socket,
         debug,
         "Target screenshot couldn't be found on screen.",
+        step_match_choice(step),
     )
 
 
@@ -514,6 +586,7 @@ def smooth_drag_to(
     debug: bool = False,
     steps: int = 2,
 ) -> None:
+    ensure_sequence_not_aborted()
     dx = target_x - start_x
     dy = target_y - start_y
     distance = math.hypot(dx, dy)
@@ -531,7 +604,7 @@ def smooth_drag_to(
     start_drag_y = round(unit_y * min(16, distance))
     if start_drag_x or start_drag_y:
         run_ydotool(["mousemove", "--", str(start_drag_x), str(start_drag_y)], ydotool_socket)
-        time.sleep(0.02)
+        interruptible_sleep(0.02)
 
     current_start_x = start_x + start_drag_x
     current_start_y = start_y + start_drag_y
@@ -550,6 +623,7 @@ def smooth_drag_to(
     previous_x = current_start_x
     previous_y = current_start_y
     for step_index in range(1, steps + 1):
+        ensure_sequence_not_aborted()
         progress = step_index / steps
         next_x = round(current_start_x + dx * progress)
         next_y = round(current_start_y + dy * progress)
@@ -559,7 +633,7 @@ def smooth_drag_to(
             run_ydotool(["mousemove", "--", str(move_x), str(move_y)], ydotool_socket)
         previous_x = next_x
         previous_y = next_y
-        time.sleep(0.003)
+        interruptible_sleep(0.003)
 
 
 def run_model_step(
@@ -569,6 +643,7 @@ def run_model_step(
     click_module,
     original_position,
 ) -> int:
+    ensure_sequence_not_aborted()
     action = str(step.get("action", "")).strip().lower()
     log_sequence(f"run_model_step action={action}")
     if action == "input":
@@ -673,7 +748,7 @@ def run_model_step(
         try:
             log_sequence("drag mouse_down")
             run_ydotool(["click", "0x40"], ydotool_socket)
-            time.sleep(0.03)
+            interruptible_sleep(0.03)
             if source_position is None:
                 source_position = click_module.read_cursor_position()
             log_sequence(f"drag source_position={source_position.x},{source_position.y}")
@@ -689,7 +764,7 @@ def run_model_step(
             )
             run_ydotool(["mousemove", "--", "1", "0"], ydotool_socket)
             run_ydotool(["mousemove", "--", "-1", "0"], ydotool_socket)
-            time.sleep(0.03)
+            interruptible_sleep(0.03)
             drag_reached_target = True
             log_sequence("drag reached target")
             return 0
@@ -697,7 +772,7 @@ def run_model_step(
             run_ydotool(["click", "0x80"], ydotool_socket)
             log_sequence("drag mouse_up")
             if drag_reached_target:
-                time.sleep(0.08)
+                interruptible_sleep(0.08)
 
     raise SystemExit(f"Unknown automation action: {action}")
 
@@ -737,6 +812,21 @@ def evaluate_if_condition(
     return not last_step_success
 
 
+def if_jump_target(
+    step: dict[str, object],
+    steps: list[dict[str, object]],
+) -> int | None:
+    if not bool(step.get("if_jump_enabled", False)):
+        return None
+    try:
+        target_step = int(float(step.get("if_jump_step", 0) or 0))
+    except (TypeError, ValueError):
+        return None
+    if target_step < 1 or target_step > len(steps):
+        return None
+    return target_step - 1
+
+
 def next_step_handles_failure(
     steps: list[dict[str, object]],
     current_index: int,
@@ -764,6 +854,7 @@ def run_single_sequence_step(
     click_module,
     original_position,
 ) -> int:
+    ensure_sequence_not_aborted()
     action = str(step.get("action", "")).strip().lower()
     click = str(step.get("click", "left")).strip().lower()
     log_sequence(f"step {step_index} action={action} click={click}")
@@ -864,7 +955,7 @@ def run_single_sequence_step(
     else:
         wait_seconds = float(step.get("wait", 0.0) or 0.0)
     if wait_seconds > 0:
-        time.sleep(wait_seconds)
+        interruptible_sleep(wait_seconds)
     return 0
 
 
@@ -881,6 +972,8 @@ def run_steps_range(
 ) -> int:
     index = start_index
     while index < end_index:
+        ensure_sequence_not_aborted()
+
         step = steps[index]
         indent = step_indent(step)
         if indent < expected_indent:
@@ -914,8 +1007,34 @@ def run_steps_range(
                 )
                 if exit_code != 0:
                     return exit_code
+                jump_target = if_jump_target(step, steps)
+                if jump_target is not None:
+                    state["jump_count"] = int(state.get("jump_count", 0) or 0) + 1
+                    if int(state["jump_count"]) >= MAX_SEQUENCE_JUMPS:
+                        notify_debug(debug, "Automation stopped: jump loop limit reached.")
+                        log_sequence(
+                            f"sequence stopped jump loop limit reached jumps={state['jump_count']}"
+                        )
+                        return 1
+                    log_sequence(f"step {index + 1} if jump_to_step={jump_target + 1}")
+                    if expected_indent == 0:
+                        index = jump_target
+                        continue
+                    state["jump_to_index"] = jump_target
+                    return 0
+                if "jump_to_index" in state:
+                    if expected_indent == 0:
+                        index = int(state.pop("jump_to_index"))
+                        continue
+                    return 0
             index = child_end
             continue
+
+        if "jump_to_index" in state:
+            if expected_indent == 0:
+                index = int(state.pop("jump_to_index"))
+                continue
+            return 0
 
         exit_code = run_single_sequence_step(
             index + 1,
@@ -951,6 +1070,7 @@ def run_sequence(config_file: Path, ydotool_socket: str | None, index: int) -> i
         if lock is None:
             return 0
 
+        SEQUENCE_ABORT_FILE.unlink(missing_ok=True)
         click_module = load_click_module()
         original_position = click_module.read_cursor_position()
         try:
@@ -963,7 +1083,7 @@ def run_sequence(config_file: Path, ydotool_socket: str | None, index: int) -> i
                 debug,
                 click_module,
                 original_position,
-                {"last_step_success": True},
+                {"last_step_success": True, "jump_count": 0},
             )
         finally:
             current_position = click_module.read_cursor_position()
@@ -978,13 +1098,7 @@ def run_sequence(config_file: Path, ydotool_socket: str | None, index: int) -> i
 
 
 def find_index_by_name(config_file: Path, name: str) -> int:
-    if not config_file.exists():
-        raise SystemExit(f"Config not found: {config_file}")
-    with config_file.open("r", encoding="utf-8") as handle:
-        data = json.load(handle)
-    automations = data.get("automations", []) if isinstance(data, dict) else []
-    if not isinstance(automations, list):
-        raise SystemExit(f"No automations list found in {config_file}")
+    automations = load_automations(config_file)
     name_lower = name.strip().casefold()
     matches = []
     for i, auto in enumerate(automations, start=1):
@@ -1000,11 +1114,28 @@ def find_index_by_name(config_file: Path, name: str) -> int:
     raise SystemExit(f"No automation named {name!r} found in {config_file}")
 
 
+def clean_automation_id(raw_id: str) -> str:
+    candidate = raw_id.strip().lower()
+    return candidate if AUTOMATION_ID_RE.fullmatch(candidate) else ""
+
+
+def find_index_by_id(config_file: Path, automation_id: str) -> int:
+    clean_id = clean_automation_id(automation_id)
+    if not clean_id:
+        raise SystemExit(f"Invalid automation id: {automation_id!r}")
+    automations = load_automations(config_file)
+    for i, auto in enumerate(automations, start=1):
+        if clean_automation_id(str(auto.get("id", ""))) == clean_id:
+            return i
+    raise SystemExit(f"No automation id {automation_id!r} found in {config_file}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run an Input Pilot mousemove sequence")
     parser.add_argument("--config", type=Path, default=CONFIG_FILE)
     parser.add_argument("--ydotool-socket", default=DEFAULT_YDOTOOL_SOCKET)
     group = parser.add_mutually_exclusive_group()
+    group.add_argument("--id", default=None, help="stable automation id")
     group.add_argument("--index", type=int, default=None, help="1-based automation index")
     group.add_argument("--name", default=None, help="automation name (case-insensitive)")
     return parser.parse_args()
@@ -1013,7 +1144,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     config = args.config.expanduser()
-    if args.name is not None:
+    if args.id is not None:
+        index = find_index_by_id(config, args.id)
+    elif args.name is not None:
         index = find_index_by_name(config, args.name)
     else:
         index = args.index if args.index is not None else 1
