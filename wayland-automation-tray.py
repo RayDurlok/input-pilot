@@ -2991,7 +2991,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
 
         animate_mouse_check = Gtk.ToggleButton()
         animate_mouse_check.set_image(
-            Gtk.Image.new_from_icon_name("pointer-symbolic", Gtk.IconSize.BUTTON)
+            Gtk.Image.new_from_icon_name("input-mouse-symbolic", Gtk.IconSize.BUTTON)
         )
         animate_mouse_check.set_always_show_image(True)
         animate_mouse_check.set_active(bool(animate_mouse))
