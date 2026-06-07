@@ -22,6 +22,20 @@ fedora_packages=(
 
 missing=()
 optional_missing=()
+python_modules_ok=0
+
+os_id() {
+  if [[ -r /etc/os-release ]]; then
+    . /etc/os-release
+    printf '%s' "${ID:-unknown}"
+  else
+    printf 'unknown'
+  fi
+}
+
+is_fedora() {
+  [[ "$(os_id)" == "fedora" ]]
+}
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -73,11 +87,21 @@ install_fedora_packages() {
 }
 
 print_missing_help() {
+  local python_status="no"
+  if (( python_modules_ok )); then
+    python_status="yes"
+  fi
   cat >&2 <<EOF
 Input Pilot is missing required dependencies.
 
 Missing commands:
   ${missing[*]:-(none)}
+Python modules ok:
+  ${python_status}
+EOF
+
+  if is_fedora; then
+    cat >&2 <<EOF
 
 Install them on Fedora KDE with:
 
@@ -85,12 +109,29 @@ Install them on Fedora KDE with:
 
 Then run ./install.sh again.
 EOF
+  else
+    cat >&2 <<EOF
+
+Automatic package installation is currently only supported on Fedora.
+Install equivalent packages for your distribution, then run ./install.sh again.
+Required capabilities are:
+
+  GTK 3 Python bindings, AppIndicator GTK 3, ydotool, wl-clipboard,
+  OpenCV for Python, NumPy, python-evdev, KScreen tools, KDE kreadconfig6,
+  KDE kbuildsycoca6, GLib tools, xdg-open.
+EOF
+  fi
 }
 
 check_commands
-if (( ${#missing[@]} )) || ! check_python_modules; then
+if check_python_modules; then
+  python_modules_ok=1
+else
+  python_modules_ok=0
+fi
+if (( ${#missing[@]} )) || (( python_modules_ok == 0 )); then
   print_missing_help
-  if [[ -t 0 ]] && command -v sudo >/dev/null 2>&1 && command -v dnf >/dev/null 2>&1; then
+  if is_fedora && [[ -t 0 ]] && command -v sudo >/dev/null 2>&1 && command -v dnf >/dev/null 2>&1; then
     read -r -p "Install missing Fedora packages now? [y/N] " reply
     case "${reply}" in
       [yY]|[yY][eE][sS]|[jJ]|[jJ][aA])
@@ -112,13 +153,24 @@ if (( ${#missing[@]} )); then
 fi
 
 if ! check_python_modules; then
-  cat >&2 <<'EOF'
+  cat >&2 <<EOF
 Input Pilot is missing required Python modules.
+
+EOF
+  if is_fedora; then
+    cat >&2 <<EOF
 
 Install the required Fedora packages and run ./install.sh again:
 
   sudo dnf install python3-gobject gtk3 libappindicator-gtk3 python3-opencv python3-numpy python3-evdev
 EOF
+  else
+    cat >&2 <<EOF
+
+Install equivalent packages for your distribution, then run ./install.sh again.
+Required Python modules are: gi with Gtk 3 and AppIndicator3, cv2, numpy, evdev.
+EOF
+  fi
   exit 1
 fi
 

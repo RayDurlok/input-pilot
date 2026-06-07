@@ -9,7 +9,8 @@
   `~/.local/bin`, and installs desktop/autostart entries.
 - **Dependency prompt**: when required Fedora dependencies are missing,
   `install.sh` now asks whether it should install the typical package set via
-  `sudo dnf install`.
+  `sudo dnf install`. On non-Fedora systems, it prints the missing requirements
+  and asks the user to install equivalent packages manually.
 - **Uninstaller**: added `uninstall.sh` to remove the launcher and desktop
   entries while keeping user configuration and logs.
 - **README refresh**: installation now documents the tray launcher and

@@ -18,6 +18,13 @@ autostart entries. If Fedora packages are missing, the installer prints the
 missing commands/modules and asks whether it should install the typical package
 set with `sudo dnf install`.
 
+On non-Fedora distributions, `./install.sh` still checks the required commands
+and Python modules, but it does not try to install packages automatically.
+Install equivalent packages for your distribution, then rerun the installer.
+Input Pilot expects KDE Wayland, GTK 3 Python bindings, AppIndicator GTK 3,
+`ydotool`, `wl-clipboard`, Python OpenCV/NumPy/evdev, KScreen tools, and KDE
+tools such as `kreadconfig6` and `kbuildsycoca6`.
+
 Text Replacement reads keyboard events from `/dev/input`. Add your user to the
 `input` group once, then log out and back in so the new group is active:
 
