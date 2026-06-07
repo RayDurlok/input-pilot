@@ -87,6 +87,9 @@
   below the `If` row, and drag-and-drop keeps block structure intact.
 - **Animate mouse**: normal click nodes now expose a compact mouse-icon toggle
   that animates the pointer to the click target before clicking.
+- **Smooth move persistence**: `Move mouse` nodes now keep the mouse-icon
+  smooth-move toggle after saving and use it for position and previous-position
+  targets.
 - **Move mouse replaces click-hover**: hover-style behavior now belongs to
   `Move mouse`; legacy `Click` + `Hover` nodes are loaded as move nodes.
 - **KWin template cache**: template matching now reads KWin `ScreenShot2` raw

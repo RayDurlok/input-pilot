@@ -158,9 +158,10 @@ Automations are stored in:
 Use `Move mouse` for hover-style pointer movement without clicking. For `Drag`,
 the source field is where the mouse button is pressed and the target field is
 where it is released. Drag nodes also expose `Steps`, which controls how many
-interpolated mouse movements are used between source and target. Enabling
-`Debug` on an automation shows desktop notifications for helpful failures such
-as missing source or target screenshots.
+interpolated mouse movements are used between source and target. Move nodes can
+enable the mouse-icon toggle to move smoothly instead of jumping directly to the
+target. Enabling `Debug` on an automation shows desktop notifications for
+helpful failures such as missing source or target screenshots.
 
 ## Folder Templates
 

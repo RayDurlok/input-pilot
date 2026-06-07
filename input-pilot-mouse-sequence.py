@@ -442,8 +442,17 @@ def move_to_point(
     y: int,
     ydotool_socket: str | None,
     click_module,
+    animate_mouse: bool = False,
 ):
     current_position = click_module.read_cursor_position()
+    if animate_mouse:
+        return click_module.smooth_move_cursor_to(
+            x,
+            y,
+            ydotool_socket,
+            steps=50,
+            initial_position=current_position,
+        )
     return click_module.move_cursor_to(
         x,
         y,
@@ -502,6 +511,11 @@ def move_to_step_position(
             original_position.y,
             ydotool_socket,
             click_module,
+            animate_mouse=(
+                role == "target"
+                and str(step.get("action", "")).strip().lower() == "move"
+                and bool(step.get("animate_mouse", False))
+            ),
         )
         return 0, position
 
@@ -510,7 +524,17 @@ def move_to_step_position(
     x = read_int_field(step, f"{prefix}x", label)
     y = read_int_field(step, f"{prefix}y", label)
     log_sequence(f"move_to_{role} position={x},{y}")
-    position = move_to_point(x, y, ydotool_socket, click_module)
+    position = move_to_point(
+        x,
+        y,
+        ydotool_socket,
+        click_module,
+        animate_mouse=(
+            role == "target"
+            and str(step.get("action", "")).strip().lower() == "move"
+            and bool(step.get("animate_mouse", False))
+        ),
+    )
     return 0, position
 
 

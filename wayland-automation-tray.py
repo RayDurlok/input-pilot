@@ -666,7 +666,7 @@ def clean_mouse_steps(data: object) -> list[dict[str, object]]:
                     "input_type": input_type,
                     "condition": condition,
                     "condition_template": "",
-                    "animate_mouse": animate_mouse and action == "click",
+                    "animate_mouse": animate_mouse and action in {"click", "move"},
                     "match_choice": match_choice,
                     "keys": keys,
                     "text": text,
