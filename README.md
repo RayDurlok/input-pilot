@@ -1,259 +1,197 @@
 # Input Pilot
 
-Small KDE Wayland automation helpers for global shortcuts, tray actions, and
-screen-template clicking.
+A small KDE Wayland tray app for desktop automation.
 
-## Install
+It maps global hotkeys to folders and links, runs visual click/drag/move
+automations from screen templates, expands text snippets as you type, and drops
+folder templates into Dolphin — all driven from a single tray icon.
 
-Input Pilot is currently built for Fedora KDE on Wayland. Clone the repository
-and run:
+## Requirements
+
+- KDE Plasma on Wayland
+- Python 3
+- `ydotool` + `ydotoold`
+- `wl-clipboard` (`wl-copy` / `wl-paste`)
+- GTK 3 Python bindings + AppIndicator GTK 3
+- Python OpenCV, NumPy, evdev
+- KDE tools: `kreadconfig6`, `kbuildsycoca6`, `kscreen-doctor`
+
+Tested on Fedora KDE. On Fedora the installer offers to pull the packages above
+automatically; on other distributions install the equivalents first.
+
+## Quick Start
+
+Install the latest release:
 
 ```bash
+curl -L https://github.com/RayDurlok/input-pilot/releases/latest/download/input-pilot-linux.tar.gz -o input-pilot-linux.tar.gz
+tar xzf input-pilot-linux.tar.gz
+cd input-pilot
 ./install.sh
 ```
 
-The installer checks required commands and Python modules, installs the
-`input-pilot` launcher into `~/.local/bin`, and refreshes the desktop and
-autostart entries. If Fedora packages are missing, the installer prints the
-missing commands/modules and asks whether it should install the typical package
-set with `sudo dnf install`.
+The installer checks dependencies, installs the `input-pilot` launcher into
+`~/.local/bin`, and registers the autostart entry. Then start the tray:
 
-On non-Fedora distributions, `./install.sh` still checks the required commands
-and Python modules, but it does not try to install packages automatically.
-Install equivalent packages for your distribution, then rerun the installer.
-Input Pilot expects KDE Wayland, GTK 3 Python bindings, AppIndicator GTK 3,
-`ydotool`, `wl-clipboard`, Python OpenCV/NumPy/evdev, KScreen tools, and KDE
-tools such as `kreadconfig6` and `kbuildsycoca6`.
+```bash
+input-pilot
+```
 
-Text Replacement reads keyboard events from `/dev/input`. Add your user to the
-`input` group once, then log out and back in so the new group is active:
+Remove everything again with `./uninstall.sh`.
+
+### One-time setup
+
+Text Replacement reads keyboard events from `/dev/input`. Add yourself to the
+`input` group once, then log out and back in:
 
 ```bash
 sudo usermod -aG input "$USER"
 ```
 
-Verify after logging in again:
-
-```bash
-groups
-```
-
-The output should include `input`.
-
-Input automation needs an accessible `ydotoold` socket. Configure the
+Mouse/keyboard automation needs an accessible `ydotoold` socket. Configure the
 persistent service once:
 
 ```bash
 ./install-ydotool-service.sh
 ```
 
-After installation, start Input Pilot with:
-
-```bash
-input-pilot
-```
-
-Remove the launcher and desktop entries with:
-
-```bash
-./uninstall.sh
-```
-
-## Shortcuts
-
-The tray menu contains a `Hotkeys...` editor where shortcuts can be mapped to
-local paths or links. Shortcuts can be typed manually or captured with the
-`Record` button. Multi-modifier shortcuts such as `Ctrl+Alt+Shift+2` are
-supported, along with function keys, letters, numbers, and common navigation
-keys. Saving checks for duplicate shortcuts before applying the new mapping.
-
-Configured shortcuts are active while the tray helper is running. Choosing
-`Beenden` in the tray menu unregisters them so the function keys return to
-their normal application behavior.
-
-When a plain function key target is a local folder, the normal key becomes
-context-aware while the tray is running: it opens the folder normally, but if
-KWin reports that a common Save/Open dialog is focused, the shortcut pastes the
-folder path into that dialog and opens it there. The corresponding
-`Shift+<function key>` shortcut remains available as an explicit file-dialog
-helper. This helper needs `ydotoold` on `/tmp/ydotool_socket` and the Wayland
-clipboard tools `wl-copy` / `wl-paste`.
+`F12` is a global emergency stop while the tray runs — it aborts any running
+template click or automation and releases held mouse buttons.
 
 ## Tray
 
-Start the tray helper:
+Everything is configured from the tray menu:
 
-```bash
-./wayland-automation-tray.py --ydotool-socket /tmp/ydotool_socket
-```
-
-Install the tray autostart entry:
-
-```bash
-./install-tray-autostart.sh
-```
-
-The installer runs this automatically.
+- **Hotkeys…** — global shortcuts to folders and links
+- **Input Automations…** — visual click/drag/move/type sequences
+- **Folder Templates…** — drop template folders into Dolphin
+- **Textreplacement…** — type-as-you-go text snippets
 
 The tray warms a small local template server so OpenCV stays loaded between
-template clicks. Template matching uses KWin's `ScreenShot2` API when
-available; repeated clicks on the same template first verify the last known
-position with a small cached-area screenshot before falling back to a full
-search. This keeps repeated screenshot actions fast without blindly clicking
-stale coordinates.
-`F12` is registered as an emergency stop while the tray is running; it aborts
-running template clicks and input automations, and releases mouse buttons if
-needed.
+clicks. Template matching uses KWin's `ScreenShot2` API and verifies the last
+known position with a small cached screenshot before falling back to a full
+search, keeping repeated actions fast.
+
+## Hotkeys
+
+Map global shortcuts to a local path or a link. Each row has its own modifier
+and key dropdown; `Add` / `Remove` manage the list and saving rejects duplicate
+shortcuts. Supports modifiers (`Ctrl+Alt+Shift+2`), function keys, letters,
+numbers, and navigation keys.
+
+When a function-key target is a local folder, the key becomes context-aware: it
+opens the folder normally, but if a Save/Open dialog is focused it pastes the
+folder path into the dialog instead. `Shift+<key>` stays available as an
+explicit file-dialog helper.
 
 ## Input Automations
 
-The tray menu contains an `Input Automations...` editor for named input
-automations. The editor has a collapsible sidebar listing all automations;
-click an entry to switch, drag the `⠿` handle to reorder. The sidebar toolbar
-provides buttons to add, remove (with confirmation), and duplicate the selected
-automation. Each automation can have its own trigger hotkey. Hotkeys support
-modifiers plus function keys, letters, numbers, and common navigation keys.
+Build named automations from a list of nodes. The collapsible sidebar lists all
+automations — click to switch, drag the `⠿` handle to reorder, and use the
+toolbar to add, duplicate, or remove (with confirmation). Each automation can
+have its own trigger hotkey.
 
-Each node has an action (`Click`, `Drag`, `Move mouse`, `Input`, or `If`) plus
-the source/target fields needed for that action. Sources and targets can be
-screenshot templates, fixed X/Y coordinates, or the previous mouse position
-captured when the automation started. Input nodes can send key combos such as
-`Ctrl+S`, paste text strings through the clipboard, or type text by simulating
-individual key presses. Click nodes can optionally
-enable the mouse-icon toggle to animate the pointer to the target before
-clicking. Screenshot targets can choose which near-best match to use (`Best`,
-`Rightmost`, `Middle`,
-`Leftmost`, `Topmost`, `Bottommost`) when identical UI elements appear more
-than once on screen. During a chain the pointer can continue from step to step;
-after the automation finishes, it returns to the original position. Nodes can be
-reordered by dragging the `⠿` handle on the left side of each row; row numbers
-update automatically. Clicking a row number opens a note popover — notes are
-stored with the automation and shown as a tooltip on rows that have one.
+Each node has an action and the fields it needs:
 
-`If` nodes act like block-coding containers. Conditions such as `Previous node
-failed`, `Previous node succeeded`, and `Always` control whether the indented
-child nodes below the `If` row run. Drag-and-drop is block-aware: moving an
-`If` row moves its children with it, and dropping nodes into a block applies the
-correct indentation. After an `If` block runs, the default continuation is
-`Next node`; it can optionally jump to another step, which is useful for
-recovery loops such as returning to step 1 after opening a missing panel. A run
-stops automatically when it reaches 3 jumps.
+| Action | What it does |
+| --- | --- |
+| `Click` | Click a screenshot template, fixed X/Y, or the start position |
+| `Drag` | Press at the source, release at the target (with interpolated `Steps`) |
+| `Move mouse` | Hover to a target without clicking (smooth move optional) |
+| `Input` | Send a key combo (`Ctrl+S`), paste text, or type text key-by-key |
+| `If` | Block container that runs its indented children conditionally |
 
-Each automation can be triggered from the command line. The `Copy trigger
-command` button in the Trigger row copies the ready-to-use command:
+Targets can be **screenshot templates**, **fixed coordinates**, or the
+**previous mouse position** captured when the run started. When a template
+matches in several places, pick which one to use (`Best`, `Rightmost`,
+`Middle`, `Leftmost`, `Topmost`, `Bottommost`). Click and Move nodes can enable
+the mouse-pointer toggle to animate the cursor instead of jumping.
+
+`If` nodes work like block coding. Conditions (`Previous node failed`,
+`Previous node succeeded`, `Always`) decide whether the indented children run.
+Drag-and-drop is block-aware — moving an `If` row carries its children. After a
+block finishes it continues with the **Next node** by default, or jumps to a
+chosen **Step** (useful for recovery loops, e.g. back to step 1 after reopening
+a missing panel). A run stops automatically after 3 jumps.
+
+Nodes reorder by dragging the `⠿` handle; clicking a row number opens a note
+popover, shown as a tooltip on rows that have one.
+
+Trigger an automation from the command line — the `Copy trigger command` button
+copies the ready-to-run command:
 
 ```bash
 input-pilot-mouse-sequence.py --id auto-123456789abc
 ```
 
-Automation IDs are generated automatically and stay stable when an automation is
-renamed or reordered. The runner also accepts `--name <name>` and
-`--index <n>` for backwards compatibility. `--id`, `--name`, and `--index` are
-mutually exclusive; omitting all three defaults to index 1.
+IDs are stable across renames and reordering. `--name <name>` and `--index <n>`
+also work; omitting all three defaults to index 1. Automations are stored in
+`~/.config/wayland-automation/mousemove-sequence.json`.
 
-Automations are stored in:
+## Text Replacement
 
-```text
-~/.config/wayland-automation/mousemove-sequence.json
+Type a trigger followed by space and it is replaced inline. Entries live in
+`~/.config/wayland-automation/text-replacements.json`:
+
+```json
+[
+  { "trigger": "ct.", "replacement": "ChatGPT", "enabled": true }
+]
 ```
 
-Use `Move mouse` for hover-style pointer movement without clicking. For `Drag`,
-the source field is where the mouse button is pressed and the target field is
-where it is released. Drag nodes also expose `Steps`, which controls how many
-interpolated mouse movements are used between source and target. Move nodes can
-enable the mouse-icon toggle to move smoothly instead of jumping directly to the
-target. Enabling `Debug` on an automation shows desktop notifications for
-helpful failures such as missing source or target screenshots.
+Replacements are inserted via clipboard paste (`wl-copy` + `Ctrl+V`), so every
+Unicode character and special symbol works regardless of keyboard layout. The
+original clipboard is restored afterwards. Use `{enter}` anywhere in a
+replacement to insert a Shift+Enter line break.
+
+Date snippets use `dd`, `mm`, `yy`, and `yyyy` tokens:
+
+```json
+[
+  { "trigger": "dt.",  "date_format": "dd.mm.yyyy", "enabled": true },
+  { "trigger": "dt_",  "date_format": "yyyy_mm_dd", "enabled": true },
+  { "trigger": "rnr.", "date_format": "yyyymmdd",   "enabled": true }
+]
+```
+
+All entries are editable in the `Textreplacement…` dialog. Any value made only
+of date tokens and separators (`.` `-` `_` `/`) is stored as a date format.
 
 ## Folder Templates
 
-The tray menu contains a `Folder Templates...` editor. Each entry has a name,
-a trigger hotkey, and a template folder path. When the hotkey is pressed while
-Dolphin is active, Input Pilot copies that template folder into the current
-Dolphin directory and asks for the new folder name.
+Map a hotkey to a template folder. Pressing it while Dolphin is active copies
+that folder into the current Dolphin directory and prompts for a name. The
+default config maps `Ctrl+N` to the first template. Stored in
+`~/.config/wayland-automation/folder-templates.json`.
 
-The default user configuration maps `Ctrl+N` to the first folder template.
-Folder templates are stored in:
+## Extras
 
-```text
-~/.config/wayland-automation/folder-templates.json
-```
-
-## ydotool
-
-Install and enable a persistent `ydotoold` service for Wayland mouse/keyboard
-automation:
+Persistent ydotool service:
 
 ```bash
-./install-ydotool-service.sh
+./install-ydotool-service.sh        # install + enable
+./start-ydotool-automation-service.sh   # transient, run manually
 ```
 
-Start an accessible transient `ydotoold` service manually:
-
-```bash
-./start-ydotool-automation-service.sh
-```
-
-## Key Detector
-
-Open a small focused window that logs key presses:
+Key detector — a focused window that logs key presses to
+`~/.local/state/wayland-automation/`:
 
 ```bash
 ./detect-key.py
 ```
 
-Logs are written below:
+## Repository Layout
 
 ```text
-~/.local/state/wayland-automation/
+wayland-automation-tray.py        Tray app and all configuration dialogs
+input-pilot-mouse-sequence.py     Automation runner (CLI + triggers)
+input-pilot-template-server.py    Warm OpenCV template-matching server
+input-pilot-text-replacement.py   Type-as-you-go replacement engine
+input-pilot-folder-template.py    Dolphin folder-template helper
+wayland-click-image.py            Screen-template click/drag/move core
+install.sh / uninstall.sh         Installer and uninstaller
 ```
 
-## Text Replacement
+## License
 
-The tray menu contains a `Textreplacement...` editor. Entries are stored as an
-array in:
-
-```text
-~/.config/wayland-automation/text-replacements.json
-```
-
-Example:
-
-```json
-[
-  {
-    "trigger": "ct.",
-    "replacement": "ChatGPT",
-    "enabled": true
-  }
-]
-```
-
-Typing `ct.` followed by space replaces it with `ChatGPT`. On Wayland this
-requires low-level read access to keyboard events in `/dev/input`, usually by
-being a member of the `input` group.
-
-Replacement text is inserted via clipboard paste (`wl-copy` + `Ctrl+V`) so all
-Unicode characters and special symbols work correctly regardless of the active
-keyboard layout. The original clipboard content is restored after each
-injection.
-
-Use `{enter}` anywhere in a replacement string to send Shift+Enter at that
-position (useful for line breaks in chat applications).
-
-Date format replacements use `dd`, `mm`, `yy`, and `yyyy` tokens:
-
-```json
-[
-  { "trigger": "dt.", "date_format": "dd.mm.yyyy", "enabled": true },
-  { "trigger": "dt_", "date_format": "yyyy_mm_dd", "enabled": true },
-  { "trigger": "rnr.", "date_format": "yyyymmdd",  "enabled": true }
-]
-```
-
-These entries are editable in the `Textreplacement...` dialog. Any replacement
-value that consists only of `dd`/`mm`/`yy`/`yyyy` tokens and separator
-characters (`.` `-` `_` `/`) is automatically stored as a date format.
-
-Internally, `dt-` and `dt/` are accepted as aliases for `dt_` to handle
-keyboard layouts that report the underscore key as shifted punctuation.
+GPLv3.
