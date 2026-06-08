@@ -19,6 +19,12 @@ folder templates into Dolphin — all driven from a single tray icon.
 Tested on Fedora KDE. On Fedora the installer offers to pull the packages above
 automatically; on other distributions install the equivalents first.
 
+## Support
+
+If you want to support my work:
+
+[![Donate with PayPal](https://img.shields.io/badge/Donate-PayPal-00457C?style=for-the-badge&logo=paypal&logoColor=white)](https://www.paypal.com/donate/?hosted_button_id=V4HH8D9L36UPG)
+
 ## Quick Start
 
 Install the latest release:
@@ -58,11 +64,6 @@ persistent service once:
 `F12` is a global emergency stop while the tray runs — it aborts any running
 template click or automation and releases held mouse buttons.
 
-## Support
-
-If you want to support my work:
-
-[![Donate with PayPal](https://img.shields.io/badge/Donate-PayPal-00457C?style=for-the-badge&logo=paypal&logoColor=white)](https://www.paypal.com/donate/?hosted_button_id=V4HH8D9L36UPG)
 
 ## Tray
 
