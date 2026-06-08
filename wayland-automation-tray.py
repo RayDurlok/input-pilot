@@ -3035,9 +3035,14 @@ class MousemoveConfigDialog(Gtk.Dialog):
         condition_combo.set_no_show_all(True)
         condition_slot.pack_start(condition_combo, False, False, 0)
 
+        if_jump_label = Gtk.Label(label="run block, then continue with")
+        if_jump_label.get_style_context().add_class("dim-label")
+        if_jump_label.set_no_show_all(True)
+        condition_slot.pack_start(if_jump_label, False, False, 0)
+
         if_jump_combo = Gtk.ComboBoxText()
         if_jump_combo.append("next", "Next node")
-        if_jump_combo.append("step", "Run block, then jump to step")
+        if_jump_combo.append("step", "Step")
         if_jump_combo.set_active_id("step" if if_jump_enabled else "next")
         if_jump_combo.set_size_request(210, -1)
         if_jump_combo.set_tooltip_text("What to do after this If block finishes")
@@ -3235,6 +3240,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
             "details": details_box,
             "condition_slot": condition_slot,
             "condition": condition_combo,
+            "if_jump_label": if_jump_label,
             "if_jump_mode": if_jump_combo,
             "if_jump_step": if_jump_spin,
             "condition_template": condition_entry,
@@ -3626,6 +3632,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
         animate_mouse_check = row_data.get("animate_mouse")
         condition_slot = row_data.get("condition_slot")
         condition_combo = row_data.get("condition")
+        if_jump_label = row_data.get("if_jump_label")
         if_jump_combo = row_data.get("if_jump_mode")
         if_jump_spin = row_data.get("if_jump_step")
         condition_entry = row_data.get("condition_template")
@@ -3671,6 +3678,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
         for widget in (
             condition_slot,
             condition_combo,
+            if_jump_label,
             if_jump_combo,
             if_jump_spin,
             condition_entry,
@@ -3737,7 +3745,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
             if isinstance(input_type_combo, Gtk.Widget):
                 input_type_combo.show()
         elif action == "if":
-            for widget in (condition_slot, condition_combo, if_jump_combo):
+            for widget in (condition_slot, condition_combo, if_jump_label, if_jump_combo):
                 if isinstance(widget, Gtk.Widget):
                     widget.show()
             if (
