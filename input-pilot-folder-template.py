@@ -191,7 +191,7 @@ def ydotool_key(*events: str) -> None:
         timeout=2,
     )
     if result.returncode != 0:
-        raise RuntimeError("ydotool konnte keine Taste senden.")
+        raise RuntimeError("ydotool could not send a key.")
 
 
 def path_from_clipboard_location(text: str) -> Path:
@@ -239,32 +239,32 @@ def location_from_dolphin_bar(service: str) -> Path:
             set_clipboard(old_clipboard)
 
     if not copied:
-        raise RuntimeError("Dolphin Location ist leer.")
+        raise RuntimeError("Dolphin location is empty.")
     return path_from_clipboard_location(copied)
 
 
 def active_dolphin_directory() -> Path:
     service = service_for_active_dolphin()
     if not service:
-        raise RuntimeError("Kein aktives Dolphin-Fenster gefunden.")
+        raise RuntimeError("No active Dolphin window found.")
 
     directory = location_from_dolphin_bar(service)
     if not directory.is_dir():
-        raise RuntimeError(f"Aktuelle Dolphin Location ist kein Ordner: {directory}")
+        raise RuntimeError(f"Current Dolphin location is not a folder: {directory}")
     return directory
 
 
 def prompt_folder_name(default_name: str, parent: Path) -> str | None:
     dialog = Gtk.Dialog(title="Create Folder Template", modal=True)
     dialog.set_border_width(10)
-    dialog.add_button("Abbrechen", Gtk.ResponseType.CANCEL)
-    dialog.add_button("Erstellen", Gtk.ResponseType.OK)
+    dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+    dialog.add_button("Create", Gtk.ResponseType.OK)
 
     content = dialog.get_content_area()
     outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     content.add(outer)
 
-    label = Gtk.Label(label=f"Neuer Ordner in:\n{parent}")
+    label = Gtk.Label(label=f"New folder in:\n{parent}")
     label.set_xalign(0)
     outer.pack_start(label, False, False, 0)
 
@@ -283,14 +283,14 @@ def prompt_folder_name(default_name: str, parent: Path) -> str | None:
     if response != Gtk.ResponseType.OK:
         return None
     if not name or "/" in name or "\0" in name:
-        raise RuntimeError("Ungültiger Ordnername.")
+        raise RuntimeError("Invalid folder name.")
     return name
 
 
 def create_from_template(template_config: dict[str, str]) -> Path:
     template = Path(template_config["template"]).expanduser()
     if not template.is_dir():
-        raise RuntimeError(f"Template-Ordner fehlt: {template}")
+        raise RuntimeError(f"Template folder is missing: {template}")
 
     parent = active_dolphin_directory()
     if str(template_config.get("shortcut", "")).strip().lower() == "ctrl+n":
@@ -300,11 +300,11 @@ def create_from_template(template_config: dict[str, str]) -> Path:
 
     name = prompt_folder_name(template_config.get("default_name", "New Project"), parent)
     if name is None:
-        raise RuntimeError("Abgebrochen.")
+        raise RuntimeError("Cancelled.")
 
     destination = parent / name
     if destination.exists():
-        raise RuntimeError(f"Zielordner existiert bereits: {destination}")
+        raise RuntimeError(f"Target folder already exists: {destination}")
 
     shutil.copytree(template, destination, symlinks=True)
     return destination
@@ -317,7 +317,7 @@ def main() -> int:
 
     templates = load_templates()
     if args.index < 1 or args.index > len(templates):
-        notify(f"Folder Template {args.index} existiert nicht.")
+        notify(f"Folder Template {args.index} does not exist.")
         return 1
 
     template = templates[args.index - 1]
@@ -325,12 +325,12 @@ def main() -> int:
         destination = create_from_template(template)
     except RuntimeError as exc:
         log(str(exc))
-        if str(exc) != "Abgebrochen.":
+        if str(exc) != "Cancelled.":
             notify(str(exc))
         return 1
 
     log(f"created folder template index={args.index} destination={destination}")
-    notify(f"Ordner erstellt: {destination.name}")
+    notify(f"Folder created: {destination.name}")
     return 0
 
 

@@ -7,8 +7,7 @@ This tray helper provides the main Input Pilot menu:
   condition-based automation chains.
 - `Folder Templates...` configures folder-copy templates with trigger hotkeys.
 - `Textreplacement...` configures typed trigger replacements.
-- `ydotool prüfen` checks whether the ydotool socket is reachable.
-- `Beenden` closes the tray helper and unregisters the active shortcuts.
+- `Quit` closes the tray helper and unregisters the active shortcuts.
 
 Start it manually:
 

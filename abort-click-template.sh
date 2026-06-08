@@ -27,5 +27,5 @@ if command -v ydotool >/dev/null 2>&1; then
 fi
 
 if command -v notify-send >/dev/null 2>&1; then
-  notify-send "Input Pilot" "Laufende Automation abgebrochen."
+  notify-send "Input Pilot" "Running automation aborted."
 fi

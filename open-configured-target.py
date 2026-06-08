@@ -119,9 +119,9 @@ def set_clipboard(text: str) -> None:
             stderr=subprocess.DEVNULL,
         )
     except FileNotFoundError as exc:
-        raise AutomationError("wl-copy ist nicht installiert.") from exc
+        raise AutomationError("wl-copy is not installed.") from exc
     except subprocess.CalledProcessError as exc:
-        raise AutomationError("wl-copy konnte den Pfad nicht in die Zwischenablage legen.") from exc
+        raise AutomationError("wl-copy could not place the path on the clipboard.") from exc
 
 
 def ydotool_key(*events: str) -> None:
@@ -138,15 +138,15 @@ def ydotool_key(*events: str) -> None:
             timeout=2,
         )
     except FileNotFoundError as exc:
-        raise AutomationError("ydotool ist nicht installiert.") from exc
+        raise AutomationError("ydotool is not installed.") from exc
     except subprocess.TimeoutExpired as exc:
-        raise AutomationError("ydotool hat nicht innerhalb von 2 Sekunden reagiert.") from exc
+        raise AutomationError("ydotool did not respond within 2 seconds.") from exc
     if result.returncode != 0:
         detail = result.stdout.strip()
         if detail:
             log_event(f"ydotool-error output={detail!r}")
         raise AutomationError(
-            f"ydotool ist nicht erreichbar. Socket: {env.get('YDOTOOL_SOCKET')}"
+            f"ydotool is not reachable. Socket: {env.get('YDOTOOL_SOCKET')}"
         )
 
 

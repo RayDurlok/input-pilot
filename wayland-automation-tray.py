@@ -1789,7 +1789,7 @@ def deactivate_shortcuts() -> None:
 def check_ydotool(socket: str | None = None) -> str:
     ydotool = shutil.which("ydotool")
     if not ydotool:
-        return "ydotool ist nicht installiert."
+        return "ydotool is not installed."
 
     socket = socket or os.environ.get("YDOTOOL_SOCKET")
     command = [ydotool, "debug"]
@@ -1808,11 +1808,11 @@ def check_ydotool(socket: str | None = None) -> str:
             timeout=2,
         )
     except subprocess.TimeoutExpired:
-        return "ydotool antwortet nicht innerhalb von 2 Sekunden."
+        return "ydotool did not respond within 2 seconds."
 
     if result.returncode == 0:
-        return "ydotool ist erreichbar."
-    return result.stdout.strip() or "ydotool ist aktuell nicht erreichbar."
+        return "ydotool is reachable."
+    return result.stdout.strip() or "ydotool is currently not reachable."
 
 
 def text_replacement_running() -> bool:
@@ -1848,7 +1848,7 @@ def stop_text_replacement_engine() -> None:
 
 def text_replacement_status() -> str:
     if text_replacement_running():
-        return "Textreplacement läuft."
+        return "Text replacement is running."
     if TEXT_REPLACEMENT_LOG_FILE.exists():
         try:
             lines = TEXT_REPLACEMENT_LOG_FILE.read_text(encoding="utf-8").splitlines()
@@ -1856,7 +1856,7 @@ def text_replacement_status() -> str:
             lines = []
         if lines:
             return lines[-1]
-    return "Textreplacement läuft nicht."
+    return "Text replacement is not running."
 
 
 def make_item(label: str, callback) -> Gtk.MenuItem:
@@ -1939,7 +1939,7 @@ class AutomationTray:
         separator.show()
         menu.append(separator)
 
-        menu.append(make_item("Beenden", self.quit))
+        menu.append(make_item("Quit", self.quit))
         menu.show()
         return menu
 
@@ -1947,7 +1947,7 @@ class AutomationTray:
         if not self.template.exists():
             notify(
                 APP_NAME,
-                f"Template fehlt: {self.template}",
+                f"Template is missing: {self.template}",
             )
             return
         command = [str(TEMPLATE_SERVER), str(self.template), "--double-click"]
@@ -1972,7 +1972,7 @@ class AutomationTray:
             register_mouse_sequence_shortcuts(automations)
             notify(
                 APP_NAME,
-                f"{len(automations)} Input-Automationen gespeichert. Trigger laufen über Input Pilot.",
+                f"{len(automations)} input automations saved. Triggers run through Input Pilot.",
             )
             if response == Gtk.ResponseType.APPLY:
                 command = [str(MOUSE_SEQUENCE_RUNNER), "--id", dialog.selected_id()]
@@ -1990,7 +1990,7 @@ class AutomationTray:
             templates = dialog.templates()
             save_folder_templates(templates)
             register_folder_template_shortcuts(templates)
-            notify(APP_NAME, f"{len(templates)} Folder Templates gespeichert.")
+            notify(APP_NAME, f"{len(templates)} folder templates saved.")
             if response == Gtk.ResponseType.APPLY:
                 command = [str(FOLDER_TEMPLATE_RUNNER), "--index", str(dialog.selected_index())]
                 run_detached(command)
@@ -2006,7 +2006,7 @@ class AutomationTray:
             start_text_replacement_engine(self.ydotool_socket)
             notify(
                 APP_NAME,
-                f"{len(replacements)} Textreplacement-Einträge gespeichert. "
+                f"{len(replacements)} text replacement entries saved. "
                 f"{text_replacement_status()}",
             )
         dialog.destroy()
@@ -2020,7 +2020,7 @@ class AutomationTray:
             unregister_configured_shortcuts(previous_shortcuts)
             save_shortcuts(shortcuts)
             apply_shortcuts(shortcuts)
-            notify(APP_NAME, "Shortcuts gespeichert.")
+            notify(APP_NAME, "Shortcuts saved.")
         dialog.destroy()
 
     def quit(self, _item: Gtk.MenuItem) -> None:
@@ -3221,7 +3221,7 @@ class MousemoveConfigDialog(Gtk.Dialog):
         row.pack_start(wait_spin, False, False, 0)
 
         delete_button = Gtk.Button()
-        delete_button.set_tooltip_text("Node entfernen")
+        delete_button.set_tooltip_text("Remove node")
         delete_button.set_size_request(34, -1)
         delete_icon = Gtk.Image.new_from_icon_name("user-trash-symbolic", Gtk.IconSize.BUTTON)
         delete_button.add(delete_icon)
@@ -3928,14 +3928,14 @@ class MousemoveConfigDialog(Gtk.Dialog):
 
     def choose_template(self, _button: Gtk.Button, entry: Gtk.Entry) -> None:
         chooser = Gtk.FileChooserDialog(
-            title="Screenshot Template wählen",
+            title="Select screenshot template",
             parent=self,
             action=Gtk.FileChooserAction.OPEN,
         )
         chooser.add_buttons(
-            "Abbrechen",
+            "Cancel",
             Gtk.ResponseType.CANCEL,
-            "Auswählen",
+            "Select",
             Gtk.ResponseType.OK,
         )
         image_filter = Gtk.FileFilter()
@@ -4091,7 +4091,7 @@ class KeyComboRecorderDialog(Gtk.Dialog):
         self.combo = ""
         self.set_default_size(360, 120)
         self.set_border_width(12)
-        self.add_button("Abbrechen", Gtk.ResponseType.CANCEL)
+        self.add_button("Cancel", Gtk.ResponseType.CANCEL)
         self.add_events(Gdk.EventMask.KEY_PRESS_MASK)
         self.connect("key-press-event", self.on_key_press)
 
@@ -4156,9 +4156,6 @@ class FolderTemplateDialog(Gtk.Dialog):
         self.rows: list[dict[str, Gtk.Widget]] = []
         self.widget_rows: dict[int, dict[str, Gtk.Widget]] = {}
         self.selected_row: dict[str, Gtk.Widget] | None = None
-        self.add_button("Abbrechen", Gtk.ResponseType.CANCEL)
-        self.add_button("Ausführen", Gtk.ResponseType.APPLY)
-        self.add_button("Speichern", Gtk.ResponseType.OK)
 
         content = self.get_content_area()
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -4205,6 +4202,22 @@ class FolderTemplateDialog(Gtk.Dialog):
         remove_button = Gtk.Button(label="Remove")
         remove_button.connect("clicked", self.remove_selected_row)
         buttons.pack_start(remove_button, False, False, 0)
+
+        spacer = Gtk.Label()
+        buttons.pack_start(spacer, True, True, 0)
+
+        cancel_button = Gtk.Button(label="Cancel")
+        cancel_button.connect("clicked", lambda _: self.response(Gtk.ResponseType.CANCEL))
+        buttons.pack_start(cancel_button, False, False, 0)
+
+        run_button = Gtk.Button(label="Run")
+        run_button.connect("clicked", lambda _: self.response(Gtk.ResponseType.APPLY))
+        buttons.pack_start(run_button, False, False, 0)
+
+        save_button = Gtk.Button(label="Save")
+        save_button.connect("clicked", lambda _: self.response(Gtk.ResponseType.OK))
+        save_button.get_style_context().add_class("suggested-action")
+        buttons.pack_start(save_button, False, False, 0)
 
         self.show_all()
 
@@ -4290,14 +4303,14 @@ class FolderTemplateDialog(Gtk.Dialog):
 
     def choose_template_folder(self, _button: Gtk.Button, entry: Gtk.Entry) -> None:
         chooser = Gtk.FileChooserDialog(
-            title="Template-Ordner wählen",
+            title="Select template folder",
             parent=self,
             action=Gtk.FileChooserAction.SELECT_FOLDER,
         )
         chooser.add_buttons(
-            "Abbrechen",
+            "Cancel",
             Gtk.ResponseType.CANCEL,
-            "Auswählen",
+            "Select",
             Gtk.ResponseType.OK,
         )
         response = chooser.run()
