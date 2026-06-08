@@ -175,9 +175,9 @@ of date tokens and separators (`.` `-` `_` `/`) is stored as a date format.
 ![Folder templates editor](docs/folder-templates.png)
 
 Map a hotkey to a template folder. Pressing it while Dolphin is active copies
-that folder into the current Dolphin directory and prompts for a name. The
-default config maps `Ctrl+N` to the first template. Stored in
-`~/.config/wayland-automation/folder-templates.json`.
+that folder into the current Dolphin directory and prompts for a name. There are
+no templates by default — add your own; `Ctrl+N` is a handy hotkey to assign.
+Stored in `~/.config/wayland-automation/folder-templates.json`.
 
 ## Extras
 

@@ -40,7 +40,6 @@ CONFIG_FILE = Path.home() / ".config/wayland-automation/shortcuts.json"
 TEXT_REPLACEMENTS_FILE = Path.home() / ".config/wayland-automation/text-replacements.json"
 MOUSE_SEQUENCE_FILE = Path.home() / ".config/wayland-automation/mousemove-sequence.json"
 FOLDER_TEMPLATE_FILE = Path.home() / ".config/wayland-automation/folder-templates.json"
-DEFAULT_FOLDER_TEMPLATE = Path.home() / "Templates/Input Pilot Folder Template"
 APP_ICON = SCRIPT_DIR / "InputPilotIconRounded.png"
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
 ACTIVE_WINDOW_FILE = STATE_DIR / "wayland-automation/active-window.json"
@@ -759,6 +758,13 @@ def load_mouse_config() -> dict[str, object]:
     else:
         automations = [data]
 
+    # Debug is a global setting. Migrate older configs that stored it
+    # per-automation by treating any enabled flag as the global value.
+    debug = bool(data.get("debug", False)) or any(
+        isinstance(item, dict) and bool(item.get("debug", False))
+        for item in automations
+    )
+
     clean_automations = []
     used_ids: set[str] = set()
     for index, item in enumerate(automations, start=1):
@@ -771,11 +777,10 @@ def load_mouse_config() -> dict[str, object]:
                 "id": unique_automation_id(item.get("id", ""), used_ids),
                 "name": name,
                 "shortcut": shortcut,
-                "debug": bool(item.get("debug", False)),
                 "steps": clean_mouse_steps(item.get("steps", [])),
             }
         )
-    return {"automations": clean_automations}
+    return {"debug": debug, "automations": clean_automations}
 
 
 def load_mouse_sequence() -> list[dict[str, object]]:
@@ -788,7 +793,9 @@ def load_mouse_sequence() -> list[dict[str, object]]:
     return []
 
 
-def save_mouse_config(automations: list[dict[str, object]]) -> list[dict[str, object]]:
+def save_mouse_config(
+    automations: list[dict[str, object]], debug: bool = False
+) -> list[dict[str, object]]:
     MOUSE_SEQUENCE_FILE.parent.mkdir(parents=True, exist_ok=True)
     clean_automations = []
     used_names: set[str] = set()
@@ -805,11 +812,10 @@ def save_mouse_config(automations: list[dict[str, object]]) -> list[dict[str, ob
                 "id": unique_automation_id(item.get("id", ""), used_ids),
                 "name": name,
                 "shortcut": shortcut,
-                "debug": bool(item.get("debug", False)),
                 "steps": clean_mouse_steps(item.get("steps", [])),
             }
         )
-    data = {"automations": clean_automations}
+    data = {"debug": bool(debug), "automations": clean_automations}
     with MOUSE_SEQUENCE_FILE.open("w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=2, ensure_ascii=False)
         handle.write("\n")
@@ -832,19 +838,12 @@ def unique_automation_name(
 
 
 def default_folder_templates() -> list[dict[str, object]]:
-    return [
-        {
-            "name": "Project Template",
-            "shortcut": "Ctrl+N",
-            "template": str(DEFAULT_FOLDER_TEMPLATE),
-            "default_name": "New Project",
-        }
-    ]
+    return []
 
 
 def clean_folder_templates(data: object) -> list[dict[str, object]]:
     if not isinstance(data, list):
-        return default_folder_templates()
+        return []
     templates = []
     for index, item in enumerate(data, start=1):
         if not isinstance(item, dict):
@@ -861,17 +860,17 @@ def clean_folder_templates(data: object) -> list[dict[str, object]]:
                 or "New Project",
             }
         )
-    return templates or default_folder_templates()
+    return templates
 
 
 def load_folder_templates() -> list[dict[str, object]]:
     if not FOLDER_TEMPLATE_FILE.exists():
-        return default_folder_templates()
+        return []
     try:
         with FOLDER_TEMPLATE_FILE.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
     except (OSError, json.JSONDecodeError):
-        return default_folder_templates()
+        return []
     return clean_folder_templates(data)
 
 
@@ -1866,6 +1865,136 @@ def make_item(label: str, callback) -> Gtk.MenuItem:
     return item
 
 
+HOTKEYS_INFO = (
+    "<b>What it does</b>\n"
+    "Map a global keyboard shortcut to open a folder or a link/URL. While the "
+    "tray is running, pressing the shortcut opens the target.\n\n"
+    "<b>Set one up</b>\n"
+    "• Each row is one shortcut. Pick a modifier (or “—” for none) and a key.\n"
+    "• Type a folder path or a URL in “Path or link”, or click “Browse” to pick "
+    "a folder.\n"
+    "• “Add” creates a new row, the trash icon removes one. Saving warns you if "
+    "the same shortcut is used twice.\n\n"
+    "<b>Smart folder shortcuts</b>\n"
+    "If the target is a local folder, the shortcut normally opens it. But when a "
+    "Save/Open file dialog is focused, it instead pastes the folder path into "
+    "that dialog. Hold <b>Shift</b> with the key to always use the file-dialog "
+    "helper.\n\n"
+    "<b>Good to know</b>\n"
+    "Shortcuts are only active while Input Pilot runs. Choosing “Quit” in the "
+    "tray releases them so the keys behave normally again."
+)
+
+TEXT_REPLACEMENT_INFO = (
+    "<b>What it does</b>\n"
+    "Type a short trigger and it is instantly replaced with longer text — handy "
+    "for signatures, links, or boilerplate.\n\n"
+    "<b>Set one up</b>\n"
+    "• Each row is a pair: the trigger on the left, the replacement on the "
+    "right.\n"
+    "• Type the trigger followed by <b>Space</b> to expand it. Example: “hl.” → "
+    "“Hello!”.\n"
+    "• A short, uncommon ending like “.” keeps triggers from firing by "
+    "accident.\n\n"
+    "<b>Line breaks &amp; special characters</b>\n"
+    "Write <tt>{enter}</tt> anywhere in the replacement to insert a line break "
+    "(Shift+Enter). Text is pasted through the clipboard, so any symbol or emoji "
+    "works on any keyboard layout — your previous clipboard is restored "
+    "afterwards.\n\n"
+    "<b>Dates</b>\n"
+    "Put date tokens in the replacement field and the current date is inserted: "
+    "<tt>dd</tt> day, <tt>mm</tt> month, <tt>yy</tt>/<tt>yyyy</tt> year. "
+    "Example: <tt>dd.mm.yyyy</tt> → 08.06.2026. Separators . - _ / are allowed.\n\n"
+    "<b>Requirement</b>\n"
+    "Reading what you type needs membership in the “input” group (see the "
+    "README’s one-time setup)."
+)
+
+INPUT_AUTOMATIONS_INFO = (
+    "<b>What it does</b>\n"
+    "Record a sequence of mouse and keyboard steps, then replay it by hotkey or "
+    "from the command line — great for repetitive clicks in any app.\n\n"
+    "<b>Sidebar</b>\n"
+    "Lists your automations. Click one to edit it, drag the “⠿” handle to "
+    "reorder, and use the toolbar to add, duplicate, or remove.\n\n"
+    "<b>Nodes (steps)</b>\n"
+    "Each row is one step. Choose an action:\n"
+    "• <b>Click</b> – click a target\n"
+    "• <b>Drag</b> – press at a source, release at a target (with “Steps” for "
+    "smoothness)\n"
+    "• <b>Move mouse</b> – hover without clicking\n"
+    "• <b>Input</b> – send a key combo, paste text, or type text\n"
+    "• <b>If</b> – run the indented steps below only when a condition holds\n\n"
+    "<b>Targets</b>\n"
+    "A target is a screenshot template, fixed X/Y coordinates, or the mouse "
+    "position from when the run started. If a template appears more than once on "
+    "screen, choose which match to use (Best, Rightmost, Middle, …).\n\n"
+    "<b>If blocks</b>\n"
+    "Conditions are “Previous node failed/succeeded” or “Always”. After the "
+    "block, continue with the next node or jump to a chosen step — useful for "
+    "retry loops (e.g. back to step 1 after reopening a panel).\n\n"
+    "<b>Running</b>\n"
+    "Give the automation a trigger hotkey, or use “Copy trigger command” for the "
+    "CLI. “Run” tests the current one. “Debug” (global) shows notifications when "
+    "a step fails. <b>F12</b> is an emergency stop."
+)
+
+FOLDER_TEMPLATES_INFO = (
+    "<b>What it does</b>\n"
+    "Copy a prepared template folder into the folder you are browsing in "
+    "Dolphin, with a single hotkey.\n\n"
+    "<b>Set one up</b>\n"
+    "There are no templates out of the box — you add your own.\n"
+    "• “Add template” creates an empty row; fill in a name, a modifier + key "
+    "hotkey, and the template folder to copy (“Browse” to pick it).\n"
+    "• “Remove” deletes the selected row.\n\n"
+    "<b>Use it</b>\n"
+    "Open Dolphin and go to where the new folder should appear, then press the "
+    "hotkey. Input Pilot copies the template there and asks for the new folder’s "
+    "name.\n\n"
+    "<b>Good to know</b>\n"
+    "<b>Ctrl+N</b> is a handy hotkey to assign. “Run” triggers the selected "
+    "template right now."
+)
+
+
+def make_info_button(parent: Gtk.Window, title: str, info_text: str = "") -> Gtk.Button:
+    button = Gtk.Button()
+    button.set_image(
+        Gtk.Image.new_from_icon_name("dialog-information-symbolic", Gtk.IconSize.BUTTON)
+    )
+    button.set_relief(Gtk.ReliefStyle.NONE)
+    button.set_can_focus(False)
+    button.set_tooltip_text("Info")
+
+    def on_clicked(_button: Gtk.Button) -> None:
+        dialog = Gtk.Dialog(title=title, transient_for=parent, modal=True)
+        dialog.set_default_size(580, 520)
+        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+
+        content = dialog.get_content_area()
+        content.set_border_width(12)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_hexpand(True)
+        scroller.set_vexpand(True)
+        label = Gtk.Label()
+        label.set_markup(info_text or "Coming soon.")
+        label.set_xalign(0)
+        label.set_yalign(0)
+        label.set_line_wrap(True)
+        label.set_selectable(True)
+        scroller.add(label)
+        content.add(scroller)
+
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
+    button.connect("clicked", on_clicked)
+    return button
+
+
 def apply_window_icon() -> None:
     GLib.set_prgname(DESKTOP_APP_ID)
     try:
@@ -1961,13 +2090,16 @@ class AutomationTray:
     def show_mousemove_config(self, _item: Gtk.MenuItem) -> None:
         config = load_mouse_config()
         automations = config.get("automations", [])
-        dialog = MousemoveConfigDialog(automations if isinstance(automations, list) else [])
+        dialog = MousemoveConfigDialog(
+            automations if isinstance(automations, list) else [],
+            bool(config.get("debug", False)),
+        )
         while True:
             response = dialog.run()
             if response not in {Gtk.ResponseType.OK, Gtk.ResponseType.APPLY}:
                 break
             automations = dialog.automations()
-            automations = save_mouse_config(automations)
+            automations = save_mouse_config(automations, dialog.debug())
             dialog.set_automations(automations)
             register_mouse_sequence_shortcuts(automations)
             notify(
@@ -2098,11 +2230,14 @@ class MousemoveConfigDialog(Gtk.Dialog):
         ("bottommost", "Bottommost"),
     ]
 
-    def __init__(self, automations: list[dict[str, object]]) -> None:
+    def __init__(
+        self, automations: list[dict[str, object]], debug: bool = False
+    ) -> None:
         super().__init__(title="Input Automations")
         self.set_default_size(1400, 680)
         self.set_border_width(0)
         self.install_css()
+        self.initial_debug = bool(debug)
         self.automation_state = self.normalize_automations(automations)
         self.current_index = 0
         self.loading = False
@@ -2236,6 +2371,8 @@ class MousemoveConfigDialog(Gtk.Dialog):
         copy_command_btn.connect("clicked", self.on_copy_command)
         trigger_row.pack_start(copy_command_btn, False, False, 0)
 
+        trigger_row.pack_end(make_info_button(self, "Input Automations", INPUT_AUTOMATIONS_INFO), False, False, 0)
+
         scroller = Gtk.ScrolledWindow()
         scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scroller.set_hexpand(True)
@@ -2279,7 +2416,10 @@ class MousemoveConfigDialog(Gtk.Dialog):
         detail_box.pack_start(footer, False, False, 0)
 
         self.debug_check = Gtk.CheckButton(label="Debug")
-        self.debug_check.set_tooltip_text("Show helpful notifications while running this automation")
+        self.debug_check.set_tooltip_text(
+            "Show helpful notifications while running automations (global)"
+        )
+        self.debug_check.set_active(self.initial_debug)
         footer.pack_start(self.debug_check, False, False, 0)
 
         footer.pack_start(Gtk.Box(), True, True, 0)
@@ -2393,7 +2533,6 @@ class MousemoveConfigDialog(Gtk.Dialog):
                     "id": unique_automation_id(automation.get("id", ""), used_ids),
                     "name": name,
                     "shortcut": canonical_shortcut(str(automation.get("shortcut", ""))),
-                    "debug": bool(automation.get("debug", False)),
                     "steps": clean_mouse_steps(automation.get("steps", [])),
                 }
             )
@@ -2403,7 +2542,6 @@ class MousemoveConfigDialog(Gtk.Dialog):
                     "id": unique_automation_id("", used_ids),
                     "name": "Automation 1",
                     "shortcut": "",
-                    "debug": False,
                     "steps": [],
                 }
             )
@@ -2614,7 +2752,6 @@ class MousemoveConfigDialog(Gtk.Dialog):
                 "id": automation_id,
                 "name": name,
                 "shortcut": self.shortcut(),
-                "debug": self.debug_check.get_active(),
                 "steps": self.steps(),
             }
         item = self.automation_state.pop(source_index)
@@ -2645,7 +2782,6 @@ class MousemoveConfigDialog(Gtk.Dialog):
             MODIFIER_OPTIONS.index(modifier) if modifier in MODIFIER_OPTIONS else 0
         )
         self.key_combo.set_active(HOTKEY_KEYS.index(key) + 1 if key in HOTKEY_KEYS else 0)
-        self.debug_check.set_active(bool(automation.get("debug", False)))
 
         self.clear_step_rows()
         steps = automation.get("steps", [])
@@ -2710,7 +2846,6 @@ class MousemoveConfigDialog(Gtk.Dialog):
             "id": automation_id,
             "name": name,
             "shortcut": self.shortcut(),
-            "debug": self.debug_check.get_active(),
             "steps": self.steps(),
         }
         if 0 <= self.current_index < len(self.sidebar_row_events):
@@ -2746,7 +2881,6 @@ class MousemoveConfigDialog(Gtk.Dialog):
                 ),
                 "name": name,
                 "shortcut": "",
-                "debug": False,
                 "steps": [],
             }
         )
@@ -2776,7 +2910,6 @@ class MousemoveConfigDialog(Gtk.Dialog):
                     "id": unique_automation_id("", set()),
                     "name": "Automation 1",
                     "shortcut": "",
-                    "debug": False,
                     "steps": [],
                 }
             ]
@@ -4084,6 +4217,9 @@ class MousemoveConfigDialog(Gtk.Dialog):
         self.save_current_automation()
         return self.normalize_automations(self.automation_state)
 
+    def debug(self) -> bool:
+        return self.debug_check.get_active()
+
 
 class KeyComboRecorderDialog(Gtk.Dialog):
     def __init__(self, parent: Gtk.Window) -> None:
@@ -4161,6 +4297,15 @@ class FolderTemplateDialog(Gtk.Dialog):
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         content.add(outer)
 
+        top_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        top_bar.pack_end(
+            make_info_button(self, "Folder Templates", FOLDER_TEMPLATES_INFO),
+            False,
+            False,
+            0,
+        )
+        outer.pack_start(top_bar, False, False, 0)
+
         scroller = Gtk.ScrolledWindow()
         scroller.set_hexpand(True)
         scroller.set_vexpand(True)
@@ -4190,7 +4335,7 @@ class FolderTemplateDialog(Gtk.Dialog):
                 str(template.get("template", "")),
             )
         if not self.rows:
-            self.add_row_values("Project Template", "Ctrl+N", str(DEFAULT_FOLDER_TEMPLATE))
+            self.add_row_values("", "", "")
 
         buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         outer.pack_start(buttons, False, False, 0)
@@ -4250,7 +4395,7 @@ class FolderTemplateDialog(Gtk.Dialog):
 
         template_entry = Gtk.Entry()
         template_entry.set_text(template)
-        template_entry.set_placeholder_text(str(DEFAULT_FOLDER_TEMPLATE))
+        template_entry.set_placeholder_text("~/Templates/My Template")
         template_entry.set_hexpand(True)
         row.pack_start(template_entry, True, True, 0)
 
@@ -4285,7 +4430,7 @@ class FolderTemplateDialog(Gtk.Dialog):
         return False
 
     def add_row(self, _button: Gtk.Button) -> None:
-        self.add_row_values("Project Template", "Ctrl+N", str(DEFAULT_FOLDER_TEMPLATE))
+        self.add_row_values("", "", "")
         name_entry = self.rows[-1]["name"]
         if isinstance(name_entry, Gtk.Entry):
             name_entry.grab_focus()
@@ -4299,7 +4444,7 @@ class FolderTemplateDialog(Gtk.Dialog):
             self.rows.remove(self.selected_row)
             self.selected_row = self.rows[-1] if self.rows else None
         if not self.rows:
-            self.add_row_values("Project Template", "Ctrl+N", str(DEFAULT_FOLDER_TEMPLATE))
+            self.add_row_values("", "", "")
 
     def choose_template_folder(self, _button: Gtk.Button, entry: Gtk.Entry) -> None:
         chooser = Gtk.FileChooserDialog(
@@ -4390,6 +4535,7 @@ class TextReplacementDialog(Gtk.Dialog):
         replacement_header.set_hexpand(True)
         header.pack_start(input_header, True, True, 0)
         header.pack_start(replacement_header, True, True, 0)
+        header.pack_end(make_info_button(self, "Text Replacement", TEXT_REPLACEMENT_INFO), False, False, 0)
         self.rows_box.pack_start(header, False, False, 0)
 
         for item in replacements:
@@ -4507,6 +4653,7 @@ class ShortcutConfigDialog(Gtk.Dialog):
         header.pack_start(shortcut_header, False, False, 0)
         header.pack_start(record_spacer, False, False, 0)
         header.pack_start(target_header, True, True, 0)
+        header.pack_end(make_info_button(self, "Hotkeys", HOTKEYS_INFO), False, False, 0)
         for width in (self.BROWSE_WIDTH, self.REMOVE_WIDTH):
             spacer = Gtk.Label()
             spacer.set_size_request(width, -1)

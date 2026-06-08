@@ -136,6 +136,19 @@ def load_automations(config_file: Path) -> list[dict[str, object]]:
     raise SystemExit(f"Mousemove config must contain automations or steps: {config_file}")
 
 
+def load_global_debug(config_file: Path) -> bool:
+    if not config_file.exists():
+        return False
+    try:
+        with config_file.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return False
+    if isinstance(data, dict):
+        return bool(data.get("debug", False))
+    return False
+
+
 def load_steps(config_file: Path, index: int) -> list[dict[str, object]]:
     data = load_automation(config_file, index).get("steps", [])
     if not isinstance(data, list):
@@ -1147,7 +1160,8 @@ def run_steps_range(
 
 def run_sequence(config_file: Path, ydotool_socket: str | None, index: int) -> int:
     automation = load_automation(config_file, index)
-    debug = bool(automation.get("debug", False))
+    # Debug is a global setting; fall back to a legacy per-automation flag.
+    debug = load_global_debug(config_file) or bool(automation.get("debug", False))
     steps = load_steps(config_file, index)
     log_sequence(
         f"run index={index} name={automation.get('name', 'Automation')} steps={len(steps)}"
