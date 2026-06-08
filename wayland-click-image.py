@@ -363,6 +363,12 @@ def smooth_move_cursor_to(
     return CursorPosition(target_x, target_y)
 
 
+def settle_pointer_hover(socket: str | None) -> None:
+    run_ydotool(["mousemove", "--", "1", "0"], socket)
+    run_ydotool(["mousemove", "--", "-1", "0"], socket)
+    time.sleep(0.02)
+
+
 def start_screenshot(output: Path, current_monitor: bool = False) -> subprocess.Popen:
     spectacle = require_command("spectacle", "sudo dnf install spectacle")
     command = [spectacle, "-b", "-n"]
@@ -786,6 +792,7 @@ def click_at(
                 initial_position=original_position,
             )
 
+        settle_pointer_hover(socket)
         ensure_not_aborted()
         if repeat == 1:
             run_ydotool(["click", button_code], socket)

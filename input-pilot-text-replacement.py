@@ -28,6 +28,7 @@ DEFAULT_YDOTOOL_SOCKET = "/tmp/ydotool_socket"
 SCRIPT_DIR = Path(__file__).resolve().parent
 MOUSE_SEQUENCE_RUNNER = SCRIPT_DIR / "input-pilot-mouse-sequence.py"
 MAX_BUFFER = 128
+MOUSE_SHORTCUT_SETTLE_SECONDS = 0.08
 
 LETTER_KEYS = {
     ecodes.KEY_A: "a",
@@ -451,6 +452,7 @@ class ReplacementEngine:
             return
         shortcut = self.pending_mouse_shortcut
         self.pending_mouse_shortcut = None
+        time.sleep(MOUSE_SHORTCUT_SETTLE_SECONDS)
 
         now = time.monotonic()
         if (

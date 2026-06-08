@@ -316,7 +316,7 @@ def run_ydotool(arguments: list[str], socket_path: str | None) -> None:
     subprocess.run(command, check=True, env=env)
 
 
-def clipboard_text() -> str | None:
+def clipboard_bytes() -> bytes | None:
     wl_paste = shutil.which("wl-paste")
     if not wl_paste:
         return None
@@ -325,7 +325,6 @@ def clipboard_text() -> str | None:
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
-        text=True,
         timeout=1,
     )
     if result.returncode != 0:
@@ -338,10 +337,21 @@ def set_clipboard(text: str) -> None:
     if not wl_copy:
         raise SystemExit("wl-copy is not installed")
     subprocess.run(
-        [wl_copy, "--"],
-        input=text,
+        [wl_copy, "--", text],
         check=True,
-        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def restore_clipboard(content: bytes) -> None:
+    wl_copy = shutil.which("wl-copy")
+    if not wl_copy:
+        return
+    subprocess.run(
+        [wl_copy, "--"],
+        input=content,
+        check=False,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -351,7 +361,7 @@ def paste_string(text: str, ydotool_socket: str | None) -> None:
     ensure_sequence_not_aborted()
     if not text:
         raise SystemExit("Input string node is empty")
-    saved_clipboard = clipboard_text()
+    saved_clipboard = clipboard_bytes()
     set_clipboard(text)
     try:
         run_ydotool(["key", "29:1", "47:1", "47:0", "29:0"], ydotool_socket)
@@ -359,7 +369,7 @@ def paste_string(text: str, ydotool_socket: str | None) -> None:
     finally:
         if saved_clipboard is not None:
             interruptible_sleep(CLIPBOARD_RESTORE_DELAY_SECONDS)
-            set_clipboard(saved_clipboard)
+            restore_clipboard(saved_clipboard)
 
 
 def type_string_by_keys(text: str, ydotool_socket: str | None) -> None:
