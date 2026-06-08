@@ -58,6 +58,12 @@ persistent service once:
 `F12` is a global emergency stop while the tray runs — it aborts any running
 template click or automation and releases held mouse buttons.
 
+## Support
+
+If you want to support my work:
+
+[![Donate with PayPal](https://img.shields.io/badge/Donate-PayPal-00457C?style=for-the-badge&logo=paypal&logoColor=white)](https://www.paypal.com/donate/?hosted_button_id=V4HH8D9L36UPG)
+
 ## Tray
 
 Everything is configured from the tray menu:
@@ -74,6 +80,8 @@ search, keeping repeated actions fast.
 
 ## Hotkeys
 
+![Hotkeys editor](docs/hotkeys.png)
+
 Map global shortcuts to a local path or a link. Each row has its own modifier
 and key dropdown; `Add` / `Remove` manage the list and saving rejects duplicate
 shortcuts. Supports modifiers (`Ctrl+Alt+Shift+2`), function keys, letters,
@@ -85,6 +93,8 @@ folder path into the dialog instead. `Shift+<key>` stays available as an
 explicit file-dialog helper.
 
 ## Input Automations
+
+![Input Automations editor](docs/input-automations.png)
 
 Build named automations from a list of nodes. The collapsible sidebar lists all
 automations — click to switch, drag the `⠿` handle to reorder, and use the
@@ -130,12 +140,14 @@ also work; omitting all three defaults to index 1. Automations are stored in
 
 ## Text Replacement
 
+![Text replacement editor](docs/text-replacement.png)
+
 Type a trigger followed by space and it is replaced inline. Entries live in
 `~/.config/wayland-automation/text-replacements.json`:
 
 ```json
 [
-  { "trigger": "ct.", "replacement": "ChatGPT", "enabled": true }
+  { "trigger": "hl.", "replacement": "Hello!", "enabled": true }
 ]
 ```
 
@@ -158,6 +170,8 @@ All entries are editable in the `Textreplacement…` dialog. Any value made only
 of date tokens and separators (`.` `-` `_` `/`) is stored as a date format.
 
 ## Folder Templates
+
+![Folder templates editor](docs/folder-templates.png)
 
 Map a hotkey to a template folder. Pressing it while Dolphin is active copies
 that folder into the current Dolphin directory and prompts for a name. The
