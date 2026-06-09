@@ -89,6 +89,7 @@ function activeWindowLooksLikeFileDialog(window, caption, resourceClass, resourc
         "ordner",
         "speichern",
         "öffnen",
+        "export",
     ];
     if (portalDialog) {
         for (let i = 0; i < portalMarkers.length; i++) {
