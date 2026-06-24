@@ -91,7 +91,9 @@ numbers, and navigation keys.
 When a function-key target is a local folder, the key becomes context-aware: it
 opens the folder normally, but if a Save/Open dialog is focused it pastes the
 folder path into the dialog instead. `Shift+<key>` stays available as an
-explicit file-dialog helper.
+explicit file-dialog helper. The path is injected through the clipboard, so your
+previous clipboard — including a copied file — is saved and restored with its
+original MIME type.
 
 ## Input Automations
 
@@ -154,8 +156,10 @@ Type a trigger followed by space and it is replaced inline. Entries live in
 
 Replacements are inserted via clipboard paste (`wl-copy` + `Ctrl+V`), so every
 Unicode character and special symbol works regardless of keyboard layout. The
-original clipboard is restored afterwards. Use `{enter}` anywhere in a
-replacement to insert a Shift+Enter line break.
+original clipboard is restored afterwards with its MIME type preserved, so a
+copied file (`text/uri-list`) stays pasteable rather than collapsing to plain
+text. Use `{enter}` anywhere in a replacement to insert a Shift+Enter line
+break.
 
 Date snippets use `dd`, `mm`, `yy`, and `yyyy` tokens:
 

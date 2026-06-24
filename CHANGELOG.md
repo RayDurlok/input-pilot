@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Clipboard preservation — copied files survive paste
+
+- **MIME-type-aware save/restore**: the clipboard is now saved and restored with
+  its real MIME type around every clipboard-based paste — the context-aware
+  hotkey file-dialog path injection, Text Replacement, the Input automation paste
+  node, and the Dolphin folder-template helper. Previously the clipboard was read
+  and rewritten as plain text, so a copied file — which lives in `text/uri-list`
+  plus the KDE cut/copy marker — collapsed to plain text and could no longer be
+  pasted in the file manager afterwards.
+- **Richest type kept**: the save step lists the offered types via
+  `wl-paste --list-types` and keeps the most meaningful one (`text/uri-list`,
+  then images, then any other payload, then text), restoring it with
+  `wl-copy --type <mime>`. wl-copy re-adds the text aliases automatically, so
+  copied files survive the round-trip while plain text restores byte-exact. A
+  cut (move) file is restored as a copy, which is the safe outcome.
+
+### File-dialog detection
+
+- **`blob` caption marker**: windows whose caption or class contains `blob` are
+  now recognised as file dialogs, so the context-aware hotkey path-paste also
+  fires for them.
+
 ### Project packaging
 
 - **Installer**: added `install.sh` as the main setup entry point. It checks

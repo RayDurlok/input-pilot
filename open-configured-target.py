@@ -91,10 +91,56 @@ def notify(message: str) -> None:
         )
 
 
-def clipboard_text() -> str | None:
+# MIME types that wl-copy auto-derives from a text source. They are never worth
+# preserving on their own, because re-offering any single type brings them back.
+_TEXT_ALIAS_TYPES = {
+    "text/plain",
+    "text/plain;charset=utf-8",
+    "text/plain;charset=us-ascii",
+    "utf8_string",
+    "string",
+    "text",
+}
+
+
+def _pick_clipboard_type(types: list[str]) -> str | None:
+    """Pick the single richest MIME type to preserve from a clipboard offer.
+
+    wl-copy can only serve one explicit type (it still auto-adds the text
+    aliases), so we keep the most meaningful one. ``text/uri-list`` is
+    prioritised so that copied files survive a save/restore round-trip; without
+    it the restore would drop the file list and only leave plain text behind.
+    """
+
+    def first(name: str) -> str | None:
+        for candidate in types:
+            if candidate.lower() == name:
+                return candidate
+        return None
+
+    uri_list = first("text/uri-list")
+    if uri_list:
+        return uri_list
+    for candidate in types:  # any image (png, jpeg, …)
+        if candidate.lower().startswith("image/"):
+            return candidate
+    for candidate in types:  # any other non-text, non-marker payload
+        lowered = candidate.lower()
+        if lowered in _TEXT_ALIAS_TYPES or lowered == "application/x-kde-cutselection":
+            continue
+        return candidate
+    for preferred in ("text/plain;charset=utf-8", "utf8_string", "text/plain"):
+        match = first(preferred)
+        if match:
+            return match
+    return types[0] if types else None
+
+
+def save_clipboard() -> tuple[str, bytes] | None:
+    """Capture the clipboard as (mime_type, raw_bytes) preserving its real type."""
     try:
-        result = subprocess.run(
-            ["wl-paste", "--no-newline"],
+        listing = subprocess.run(
+            ["wl-paste", "--list-types"],
             check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -103,9 +149,39 @@ def clipboard_text() -> str | None:
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
-    if result.returncode != 0:
+    if listing.returncode != 0:
         return None
-    return result.stdout
+    types = [line.strip() for line in listing.stdout.splitlines() if line.strip()]
+    mime = _pick_clipboard_type(types)
+    if mime is None:
+        return None
+    try:
+        data = subprocess.run(
+            ["wl-paste", "--no-newline", "--type", mime],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=1,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if data.returncode != 0:
+        return None
+    return mime, data.stdout
+
+
+def restore_clipboard(saved: tuple[str, bytes]) -> None:
+    mime, data = saved
+    try:
+        subprocess.run(
+            ["wl-copy", "--type", mime],
+            input=data,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        pass
 
 
 def set_clipboard(text: str) -> None:
@@ -151,7 +227,7 @@ def ydotool_key(*events: str) -> None:
 
 
 def open_in_file_dialog(directory: str, trigger_settle_seconds: float) -> None:
-    old_clipboard = clipboard_text()
+    old_clipboard = save_clipboard()
     try:
         set_clipboard(directory)
         log_event(f"dialog-step clipboard-set target={directory}")
@@ -171,11 +247,8 @@ def open_in_file_dialog(directory: str, trigger_settle_seconds: float) -> None:
     finally:
         if old_clipboard is not None:
             time.sleep(CLIPBOARD_RESTORE_DELAY_SECONDS)
-            try:
-                set_clipboard(old_clipboard)
-                log_event("dialog-step clipboard-restored")
-            except AutomationError:
-                pass
+            restore_clipboard(old_clipboard)
+            log_event(f"dialog-step clipboard-restored type={old_clipboard[0]}")
 
 
 def active_window_is_file_dialog() -> bool:

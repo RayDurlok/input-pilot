@@ -90,6 +90,7 @@ function activeWindowLooksLikeFileDialog(window, caption, resourceClass, resourc
         "speichern",
         "öffnen",
         "export",
+        "blob",
     ];
     if (portalDialog) {
         for (let i = 0; i < portalMarkers.length; i++) {
@@ -124,6 +125,7 @@ function activeWindowLooksLikeFileDialog(window, caption, resourceClass, resourc
         "datei auswählen",
         "öffnen",
         "speichern",
+        "blob",
     ];
 
     for (let i = 0; i < dialogMarkers.length; i++) {

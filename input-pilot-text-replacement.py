@@ -338,22 +338,84 @@ def run_ydotool(arguments: list[str], socket_path: str | None) -> None:
     subprocess.run([ydotool, *arguments], check=True, env=env)
 
 
+# MIME types that wl-copy auto-derives from a text source; not worth preserving
+# on their own, because re-offering any single type brings them back.
+_TEXT_ALIAS_TYPES = {
+    "text/plain",
+    "text/plain;charset=utf-8",
+    "text/plain;charset=us-ascii",
+    "utf8_string",
+    "string",
+    "text",
+}
+
+
+def _pick_clipboard_type(types: list[str]) -> str | None:
+    """Pick the single richest MIME type to preserve from a clipboard offer.
+
+    wl-copy serves one explicit type (plus the auto-added text aliases), so we
+    keep the most meaningful one. ``text/uri-list`` is prioritised so copied
+    files survive a save/restore round-trip instead of collapsing to plain text.
+    """
+
+    def first(name: str) -> str | None:
+        for candidate in types:
+            if candidate.lower() == name:
+                return candidate
+        return None
+
+    uri_list = first("text/uri-list")
+    if uri_list:
+        return uri_list
+    for candidate in types:
+        if candidate.lower().startswith("image/"):
+            return candidate
+    for candidate in types:
+        lowered = candidate.lower()
+        if lowered in _TEXT_ALIAS_TYPES or lowered == "application/x-kde-cutselection":
+            continue
+        return candidate
+    for preferred in ("text/plain;charset=utf-8", "utf8_string", "text/plain"):
+        match = first(preferred)
+        if match:
+            return match
+    return types[0] if types else None
+
+
+def _save_clipboard() -> tuple[str, bytes] | None:
+    """Capture the clipboard as (mime_type, raw_bytes) preserving its real type."""
+    wl_paste = shutil.which("wl-paste")
+    if not wl_paste:
+        return None
+    try:
+        listing = subprocess.run(
+            [wl_paste, "--list-types"], capture_output=True, text=True, timeout=0.5
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    if listing.returncode != 0:
+        return None
+    types = [line.strip() for line in listing.stdout.splitlines() if line.strip()]
+    mime = _pick_clipboard_type(types)
+    if mime is None:
+        return None
+    try:
+        result = subprocess.run(
+            [wl_paste, "--no-newline", "--type", mime], capture_output=True, timeout=0.5
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    if result.returncode != 0:
+        return None
+    return mime, result.stdout
+
+
 def _clipboard_paste(text: str, socket_path: str | None) -> None:
     wl_copy = shutil.which("wl-copy")
     if not wl_copy:
         raise RuntimeError("wl-copy is not installed")
 
-    saved: bytes | None = None
-    wl_paste = shutil.which("wl-paste")
-    if wl_paste:
-        try:
-            result = subprocess.run(
-                [wl_paste, "--no-newline"], capture_output=True, timeout=0.5
-            )
-            if result.returncode == 0:
-                saved = result.stdout
-        except subprocess.TimeoutExpired:
-            pass
+    saved = _save_clipboard()
 
     subprocess.run([wl_copy, "--", text], check=True)
     # Ctrl+V: KEY_LEFTCTRL=29, KEY_V=47
@@ -361,7 +423,8 @@ def _clipboard_paste(text: str, socket_path: str | None) -> None:
 
     if saved is not None:
         time.sleep(0.15)
-        subprocess.run([wl_copy, "--"], input=saved, check=False)
+        mime, content = saved
+        subprocess.run([wl_copy, "--type", mime], input=content, check=False)
 
 
 def type_text(text: str, socket_path: str | None) -> None:

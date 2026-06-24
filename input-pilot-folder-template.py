@@ -178,6 +178,99 @@ def set_clipboard(text: str) -> None:
         return
 
 
+# MIME types that wl-copy auto-derives from a text source; not worth preserving
+# on their own, because re-offering any single type brings them back.
+_TEXT_ALIAS_TYPES = {
+    "text/plain",
+    "text/plain;charset=utf-8",
+    "text/plain;charset=us-ascii",
+    "utf8_string",
+    "string",
+    "text",
+}
+
+
+def _pick_clipboard_type(types: list[str]) -> str | None:
+    """Pick the single richest MIME type to preserve from a clipboard offer.
+
+    wl-copy serves one explicit type (plus the auto-added text aliases), so we
+    keep the most meaningful one. ``text/uri-list`` is prioritised so copied
+    files survive a save/restore round-trip instead of collapsing to plain text.
+    """
+
+    def first(name: str) -> str | None:
+        for candidate in types:
+            if candidate.lower() == name:
+                return candidate
+        return None
+
+    uri_list = first("text/uri-list")
+    if uri_list:
+        return uri_list
+    for candidate in types:
+        if candidate.lower().startswith("image/"):
+            return candidate
+    for candidate in types:
+        lowered = candidate.lower()
+        if lowered in _TEXT_ALIAS_TYPES or lowered == "application/x-kde-cutselection":
+            continue
+        return candidate
+    for preferred in ("text/plain;charset=utf-8", "utf8_string", "text/plain"):
+        match = first(preferred)
+        if match:
+            return match
+    return types[0] if types else None
+
+
+def save_clipboard() -> tuple[str, bytes] | None:
+    """Capture the clipboard as (mime_type, raw_bytes) preserving its real type."""
+    try:
+        listing = subprocess.run(
+            ["wl-paste", "--list-types"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if listing.returncode != 0:
+        return None
+    types = [line.strip() for line in listing.stdout.splitlines() if line.strip()]
+    mime = _pick_clipboard_type(types)
+    if mime is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["wl-paste", "--no-newline", "--type", mime],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=1,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return mime, result.stdout
+
+
+def restore_clipboard(saved: tuple[str, bytes]) -> None:
+    mime, content = saved
+    try:
+        subprocess.run(
+            ["wl-copy", "--type", mime],
+            input=content,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=1,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return
+
+
 def ydotool_key(*events: str) -> None:
     env = dict(os.environ)
     env.setdefault("YDOTOOL_SOCKET", DEFAULT_YDOTOOL_SOCKET)
@@ -221,7 +314,7 @@ def activate_dolphin_action(service: str, action: str) -> bool:
 
 
 def location_from_dolphin_bar(service: str) -> Path:
-    old_clipboard = clipboard_text()
+    old_clipboard = save_clipboard()
     time.sleep(TRIGGER_SETTLE_SECONDS)
 
     if not activate_dolphin_action(service, "replace_location"):
@@ -236,7 +329,7 @@ def location_from_dolphin_bar(service: str) -> Path:
         copied = clipboard_text()
     finally:
         if old_clipboard is not None:
-            set_clipboard(old_clipboard)
+            restore_clipboard(old_clipboard)
 
     if not copied:
         raise RuntimeError("Dolphin location is empty.")
