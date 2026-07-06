@@ -45,6 +45,22 @@ input-pilot
 
 Remove everything again with `./uninstall.sh`.
 
+### Update
+
+Update to the latest release the same way — fetch the tarball again and re-run
+the installer. It overwrites the `input-pilot` launcher and the autostart entry
+in place, so your configuration is kept:
+
+```bash
+curl -L https://github.com/RayDurlok/input-pilot/releases/latest/download/input-pilot-linux.tar.gz -o input-pilot-linux.tar.gz
+tar xzf input-pilot-linux.tar.gz
+cd input-pilot
+./install.sh
+```
+
+Then restart the tray so the new version loads: quit it from the tray menu (or
+log out and back in) and start it again with `input-pilot`.
+
 ### One-time setup
 
 Text Replacement reads keyboard events from `/dev/input`. Add yourself to the

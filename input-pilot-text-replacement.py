@@ -567,8 +567,16 @@ class ReplacementEngine:
             return None
         text_before_space = self.buffer[:-1]
         for replacement in self.replacements:
-            if text_before_space.endswith(replacement.trigger):
-                return replacement
+            if not text_before_space.endswith(replacement.trigger):
+                continue
+            # Only fire when the trigger stands on its own — the character right
+            # before it must be a word boundary (start of buffer or a non-word
+            # char). Otherwise a trigger like "ig" would also fire at the end of
+            # a longer word such as "fertig".
+            start = len(text_before_space) - len(replacement.trigger)
+            if start > 0 and text_before_space[start - 1].isalnum():
+                continue
+            return replacement
         return None
 
     def handle_key(self, key_code: int, key_value: int) -> None:
