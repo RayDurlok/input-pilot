@@ -31,6 +31,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 CLICK_IMAGE = SCRIPT_DIR / "wayland-click-image.py"
 TEMPLATE_SERVER = SCRIPT_DIR / "input-pilot-template-server.py"
 TEXT_REPLACEMENT_ENGINE = SCRIPT_DIR / "input-pilot-text-replacement.py"
+SUSPEND_LISTENER = SCRIPT_DIR / "input-pilot-suspend-listener.py"
 MOUSE_SEQUENCE_RUNNER = SCRIPT_DIR / "input-pilot-mouse-sequence.py"
 FOLDER_TEMPLATE_RUNNER = SCRIPT_DIR / "input-pilot-folder-template.py"
 ABORT_CLICK = SCRIPT_DIR / "abort-click-template.sh"
@@ -40,12 +41,17 @@ CONFIG_FILE = Path.home() / ".config/wayland-automation/shortcuts.json"
 TEXT_REPLACEMENTS_FILE = Path.home() / ".config/wayland-automation/text-replacements.json"
 MOUSE_SEQUENCE_FILE = Path.home() / ".config/wayland-automation/mousemove-sequence.json"
 FOLDER_TEMPLATE_FILE = Path.home() / ".config/wayland-automation/folder-templates.json"
+SETTINGS_FILE = Path.home() / ".config/wayland-automation/settings.json"
 APP_ICON = SCRIPT_DIR / "InputPilotIconRounded.png"
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
 ACTIVE_WINDOW_FILE = STATE_DIR / "wayland-automation/active-window.json"
 CURSOR_POSITION_FILE = STATE_DIR / "wayland-automation/cursor-position.json"
+PAUSE_FILE = STATE_DIR / "wayland-automation/paused"
+INDICATOR_ICON_DIR = STATE_DIR / "wayland-automation/icons"
 TEXT_REPLACEMENT_PID_FILE = STATE_DIR / "wayland-automation/text-replacement.pid"
 TEXT_REPLACEMENT_LOG_FILE = STATE_DIR / "wayland-automation/text-replacement.log"
+SUSPEND_LISTENER_PID_FILE = STATE_DIR / "wayland-automation/suspend-listener.pid"
+SUSPEND_LISTENER_LOG_FILE = STATE_DIR / "wayland-automation/suspend-listener.log"
 DEFAULT_DATE_ENTRIES: list[dict[str, object]] = [
     {"trigger": "dt.", "date_format": "dd.mm.yyyy", "enabled": True},
     {"trigger": "dt_", "date_format": "yyyy_mm_dd", "enabled": True},
@@ -84,6 +90,15 @@ HOTKEY_KEYS = (
     ]
 )
 EMERGENCY_KEY = "F12"
+SHORTCUT_OPTIONS_KEY = "_options"
+FOLDER_OPEN_MODE_DEFAULT = "default"
+FOLDER_OPEN_MODE_ACTIVE_DOLPHIN = "active-dolphin-window"
+FOLDER_OPEN_MODE_NEW_DOLPHIN_TAB = "new-dolphin-tab"
+FOLDER_OPEN_MODE_LABELS = {
+    FOLDER_OPEN_MODE_DEFAULT: "Open in new window",
+    FOLDER_OPEN_MODE_ACTIVE_DOLPHIN: "Active Dolphin window",
+    FOLDER_OPEN_MODE_NEW_DOLPHIN_TAB: "New Dolphin tab",
+}
 MODIFIER_OPTIONS = [
     "",
     "Alt",
@@ -281,11 +296,45 @@ def key_codes_for(modifier: str, function_key: str) -> list[int]:
     return codes
 
 
+def load_settings() -> dict[str, object]:
+    try:
+        with SETTINGS_FILE.open(encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_settings(settings: dict[str, object]) -> None:
+    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with SETTINGS_FILE.open("w", encoding="utf-8") as handle:
+        json.dump(settings, handle, indent=2, ensure_ascii=False)
+
+
+def suspend_shortcut() -> str:
+    """Return the configured suspend/master key, defaulting to F12."""
+    raw = str(load_settings().get("suspend_shortcut", "")).strip()
+    canonical = canonical_shortcut(raw) if raw else ""
+    return canonical or EMERGENCY_KEY
+
+
 def run_detached(command: list[str]) -> None:
     subprocess.Popen(command, start_new_session=True)
 
 
+def notifications_enabled() -> bool:
+    return not bool(load_settings().get("notifications_disabled", False))
+
+
+def set_notifications_enabled(enabled: bool) -> None:
+    settings = load_settings()
+    settings["notifications_disabled"] = not enabled
+    save_settings(settings)
+
+
 def notify(title: str, message: str) -> None:
+    if not notifications_enabled():
+        return
     if shutil.which("notify-send"):
         run_detached(["notify-send", title, message])
 
@@ -423,20 +472,50 @@ def load_shortcuts() -> dict[str, str]:
         return {}
     shortcuts = {}
     for key, value in data.items():
+        if str(key).startswith("_"):
+            continue
         shortcut = canonical_shortcut(str(key))
-        target = str(value).strip()
+        if isinstance(value, dict):
+            target = str(value.get("target", "")).strip()
+        else:
+            target = str(value).strip()
         if shortcut and target:
             shortcuts[shortcut] = target
     return shortcuts
 
 
-def save_shortcuts(shortcuts: dict[str, str]) -> None:
+def load_shortcut_folder_open_mode() -> str:
+    if not CONFIG_FILE.exists():
+        return FOLDER_OPEN_MODE_DEFAULT
+    try:
+        with CONFIG_FILE.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return FOLDER_OPEN_MODE_DEFAULT
+    if not isinstance(data, dict):
+        return FOLDER_OPEN_MODE_DEFAULT
+    options = data.get(SHORTCUT_OPTIONS_KEY)
+    if not isinstance(options, dict):
+        return FOLDER_OPEN_MODE_DEFAULT
+    mode = str(options.get("folder_open_mode", FOLDER_OPEN_MODE_DEFAULT)).strip()
+    if mode in FOLDER_OPEN_MODE_LABELS:
+        return mode
+    return FOLDER_OPEN_MODE_DEFAULT
+
+
+def save_shortcuts(
+    shortcuts: dict[str, str],
+    folder_open_mode: str = FOLDER_OPEN_MODE_DEFAULT,
+) -> None:
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     clean = {
         canonical_shortcut(key): value.strip()
         for key, value in shortcuts.items()
         if canonical_shortcut(key) and value.strip()
     }
+    if folder_open_mode not in FOLDER_OPEN_MODE_LABELS:
+        folder_open_mode = FOLDER_OPEN_MODE_DEFAULT
+    clean[SHORTCUT_OPTIONS_KEY] = {"folder_open_mode": folder_open_mode}
     with CONFIG_FILE.open("w", encoding="utf-8") as handle:
         json.dump(clean, handle, indent=2, sort_keys=True)
         handle.write("\n")
@@ -909,11 +988,25 @@ def component_path_for(desktop_id: str) -> str:
     return f"/component/{safe}"
 
 
+def write_desktop_text_if_changed(desktop_path: Path, content: str) -> None:
+    if desktop_path.exists():
+        try:
+            if desktop_path.read_text(encoding="utf-8") == content:
+                desktop_path.chmod(0o644)
+                return
+        except OSError:
+            pass
+    desktop_path.write_text(content, encoding="utf-8")
+    desktop_path.chmod(0o644)
+    mark_desktop_cache_dirty()
+
+
 def write_desktop_file(shortcut: str, target: str) -> str:
     desktop_id = desktop_id_for(shortcut)
     desktop_path = Path.home() / ".local/share/applications" / desktop_id
     desktop_path.parent.mkdir(parents=True, exist_ok=True)
-    desktop_path.write_text(
+    write_desktop_text_if_changed(
+        desktop_path,
         "\n".join(
             [
                 "[Desktop Entry]",
@@ -930,9 +1023,7 @@ def write_desktop_file(shortcut: str, target: str) -> str:
                 "",
             ]
         ),
-        encoding="utf-8",
     )
-    desktop_path.chmod(0o644)
     return desktop_id
 
 
@@ -940,7 +1031,8 @@ def write_dialog_desktop_file(function_key: str, target: str) -> str:
     desktop_id = dialog_desktop_id_for(function_key)
     desktop_path = Path.home() / ".local/share/applications" / desktop_id
     desktop_path.parent.mkdir(parents=True, exist_ok=True)
-    desktop_path.write_text(
+    write_desktop_text_if_changed(
+        desktop_path,
         "\n".join(
             [
                 "[Desktop Entry]",
@@ -957,9 +1049,7 @@ def write_dialog_desktop_file(function_key: str, target: str) -> str:
                 "",
             ]
         ),
-        encoding="utf-8",
     )
-    desktop_path.chmod(0o644)
     return desktop_id
 
 
@@ -968,7 +1058,8 @@ def write_mouse_sequence_desktop_file(automation_id: str, name: str) -> str:
     desktop_path = Path.home() / ".local/share/applications" / desktop_id
     desktop_path.parent.mkdir(parents=True, exist_ok=True)
     command = f"{MOUSE_SEQUENCE_RUNNER} --id {shlex.quote(automation_id)}"
-    desktop_path.write_text(
+    write_desktop_text_if_changed(
+        desktop_path,
         "\n".join(
             [
                 "[Desktop Entry]",
@@ -985,9 +1076,7 @@ def write_mouse_sequence_desktop_file(automation_id: str, name: str) -> str:
                 "",
             ]
         ),
-        encoding="utf-8",
     )
-    desktop_path.chmod(0o644)
     return desktop_id
 
 
@@ -996,7 +1085,8 @@ def write_folder_template_desktop_file(index: int, name: str) -> str:
     desktop_path = Path.home() / ".local/share/applications" / desktop_id
     desktop_path.parent.mkdir(parents=True, exist_ok=True)
     command = f"{FOLDER_TEMPLATE_RUNNER} --index {index}"
-    desktop_path.write_text(
+    write_desktop_text_if_changed(
+        desktop_path,
         "\n".join(
             [
                 "[Desktop Entry]",
@@ -1013,9 +1103,7 @@ def write_folder_template_desktop_file(index: int, name: str) -> str:
                 "",
             ]
         ),
-        encoding="utf-8",
     )
-    desktop_path.chmod(0o644)
     return desktop_id
 
 
@@ -1023,7 +1111,8 @@ def write_emergency_desktop_file() -> str:
     desktop_id = emergency_desktop_id()
     desktop_path = Path.home() / ".local/share/applications" / desktop_id
     desktop_path.parent.mkdir(parents=True, exist_ok=True)
-    desktop_path.write_text(
+    write_desktop_text_if_changed(
+        desktop_path,
         "\n".join(
             [
                 "[Desktop Entry]",
@@ -1040,14 +1129,78 @@ def write_emergency_desktop_file() -> str:
                 "",
             ]
         ),
-        encoding="utf-8",
     )
-    desktop_path.chmod(0o644)
     return desktop_id
 
 
 def run_checked(command: list[str]) -> None:
     subprocess.run(command, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+_DESKTOP_CACHE_DIRTY = False
+
+
+def mark_desktop_cache_dirty() -> None:
+    global _DESKTOP_CACHE_DIRTY
+    _DESKTOP_CACHE_DIRTY = True
+
+
+def rebuild_desktop_cache_if_dirty() -> None:
+    global _DESKTOP_CACHE_DIRTY
+    if not _DESKTOP_CACHE_DIRTY:
+        return
+    _DESKTOP_CACHE_DIRTY = False
+    if shutil.which("kbuildsycoca6"):
+        run_checked(["kbuildsycoca6"])
+
+
+def set_global_shortcut_codes(
+    desktop_id: str,
+    name: str,
+    codes: list[int],
+) -> None:
+    if not shutil.which("busctl"):
+        return
+    # Desktop-service actions are foreign to this tray process. On Plasma 6.7,
+    # setShortcut() can report success without actually grabbing service
+    # launcher keys; setForeignShortcut() is the path that sticks.
+    run_checked(
+        [
+            "busctl",
+            "--user",
+            "call",
+            "org.kde.kglobalaccel",
+            "/kglobalaccel",
+            "org.kde.KGlobalAccel",
+            "setForeignShortcut",
+            "asai",
+            "2",
+            desktop_id,
+            "_launch",
+            str(len(codes)),
+            *[str(code) for code in codes],
+        ]
+    )
+    run_checked(
+        [
+            "busctl",
+            "--user",
+            "call",
+            "org.kde.kglobalaccel",
+            "/kglobalaccel",
+            "org.kde.KGlobalAccel",
+            "setShortcut",
+            "asaiu",
+            "4",
+            desktop_id,
+            "_launch",
+            name,
+            name,
+            str(len(codes)),
+            *[str(code) for code in codes],
+            "6",
+        ]
+    )
 
 
 def kwin_scripting_call(*args: str) -> None:
@@ -1163,11 +1316,9 @@ def unload_kwin_active_window_script() -> None:
 def register_shortcut(shortcut: str, target: str) -> None:
     modifier, function_key = parse_shortcut(shortcut)
     desktop_id = write_desktop_file(shortcut, target)
+    rebuild_desktop_cache_if_dirty()
     name = f"Open configured target {shortcut}"
     codes = key_codes_for(modifier, function_key)
-
-    if shutil.which("kbuildsycoca6"):
-        run_checked(["kbuildsycoca6"])
 
     if shutil.which("kwriteconfig6"):
         run_checked(
@@ -1203,36 +1354,15 @@ def register_shortcut(shortcut: str, target: str) -> None:
                 name,
             ]
         )
-        run_checked(
-            [
-                "busctl",
-                "--user",
-                "call",
-                "org.kde.kglobalaccel",
-                "/kglobalaccel",
-                "org.kde.KGlobalAccel",
-                "setShortcut",
-                "asaiu",
-                "4",
-                desktop_id,
-                "_launch",
-                name,
-                name,
-                str(len(codes)),
-                *[str(code) for code in codes],
-                "6",
-            ]
-        )
+        set_global_shortcut_codes(desktop_id, name, codes)
 
 
 def register_dialog_shortcut(function_key: str, target: str) -> None:
     desktop_id = write_dialog_desktop_file(function_key, target)
+    rebuild_desktop_cache_if_dirty()
     shortcut = shortcut_label(DIALOG_MODIFIER, function_key)
     name = f"Use configured folder {function_key} in dialog"
     codes = key_codes_for(DIALOG_MODIFIER, function_key)
-
-    if shutil.which("kbuildsycoca6"):
-        run_checked(["kbuildsycoca6"])
 
     if shutil.which("kwriteconfig6"):
         run_checked(
@@ -1268,35 +1398,20 @@ def register_dialog_shortcut(function_key: str, target: str) -> None:
                 name,
             ]
         )
-        run_checked(
-            [
-                "busctl",
-                "--user",
-                "call",
-                "org.kde.kglobalaccel",
-                "/kglobalaccel",
-                "org.kde.KGlobalAccel",
-                "setShortcut",
-                "asaiu",
-                "4",
-                desktop_id,
-                "_launch",
-                name,
-                name,
-                str(len(codes)),
-                *[str(code) for code in codes],
-                "6",
-            ]
-        )
+        set_global_shortcut_codes(desktop_id, name, codes)
 
 
 def register_emergency_shortcut() -> None:
     desktop_id = write_emergency_desktop_file()
+    rebuild_desktop_cache_if_dirty()
     name = "Abort Input Pilot template click"
-    codes = key_codes_for("", EMERGENCY_KEY)
-
-    if shutil.which("kbuildsycoca6"):
-        run_checked(["kbuildsycoca6"])
+    shortcut = suspend_shortcut()
+    modifier, key = parse_shortcut(shortcut)
+    try:
+        codes = key_codes_for(modifier, key)
+    except ValueError:
+        shortcut, modifier, key = EMERGENCY_KEY, "", EMERGENCY_KEY
+        codes = key_codes_for(modifier, key)
 
     if shutil.which("kwriteconfig6"):
         run_checked(
@@ -1310,7 +1425,7 @@ def register_emergency_shortcut() -> None:
                 desktop_id,
                 "--key",
                 "_launch",
-                f"{EMERGENCY_KEY},{EMERGENCY_KEY},{name}",
+                f"{shortcut},{shortcut},{name}",
             ]
         )
 
@@ -1332,26 +1447,7 @@ def register_emergency_shortcut() -> None:
                 name,
             ]
         )
-        run_checked(
-            [
-                "busctl",
-                "--user",
-                "call",
-                "org.kde.kglobalaccel",
-                "/kglobalaccel",
-                "org.kde.KGlobalAccel",
-                "setShortcut",
-                "asaiu",
-                "4",
-                desktop_id,
-                "_launch",
-                name,
-                name,
-                str(len(codes)),
-                *[str(code) for code in codes],
-                "6",
-            ]
-        )
+        set_global_shortcut_codes(desktop_id, name, codes)
 
 
 def register_mouse_sequence_shortcut(index: int, automation: dict[str, object]) -> None:
@@ -1365,11 +1461,9 @@ def register_mouse_sequence_shortcut(index: int, automation: dict[str, object]) 
         return
     modifier, function_key = parse_shortcut(shortcut)
     desktop_id = write_mouse_sequence_desktop_file(automation_id, name)
+    rebuild_desktop_cache_if_dirty()
     shortcut_name = f"Run Input Pilot automation {name}"
     codes = key_codes_for(modifier, function_key)
-
-    if shutil.which("kbuildsycoca6"):
-        run_checked(["kbuildsycoca6"])
 
     if shutil.which("kwriteconfig6"):
         run_checked(
@@ -1405,26 +1499,7 @@ def register_mouse_sequence_shortcut(index: int, automation: dict[str, object]) 
                 shortcut_name,
             ]
         )
-        run_checked(
-            [
-                "busctl",
-                "--user",
-                "call",
-                "org.kde.kglobalaccel",
-                "/kglobalaccel",
-                "org.kde.KGlobalAccel",
-                "setShortcut",
-                "asaiu",
-                "4",
-                desktop_id,
-                "_launch",
-                shortcut_name,
-                shortcut_name,
-                str(len(codes)),
-                *[str(code) for code in codes],
-                "6",
-            ]
-        )
+        set_global_shortcut_codes(desktop_id, shortcut_name, codes)
 
 
 def register_mouse_sequence_shortcuts(automations: list[dict[str, object]]) -> None:
@@ -1441,11 +1516,9 @@ def register_folder_template_shortcut(index: int, template: dict[str, object]) -
     name = str(template.get("name", "")).strip() or f"Template {index}"
     modifier, key = parse_shortcut(shortcut)
     desktop_id = write_folder_template_desktop_file(index, name)
+    rebuild_desktop_cache_if_dirty()
     shortcut_name = f"Create Input Pilot folder template {name}"
     codes = key_codes_for(modifier, key)
-
-    if shutil.which("kbuildsycoca6"):
-        run_checked(["kbuildsycoca6"])
 
     if shutil.which("kwriteconfig6"):
         run_checked(
@@ -1481,26 +1554,7 @@ def register_folder_template_shortcut(index: int, template: dict[str, object]) -
                 shortcut_name,
             ]
         )
-        run_checked(
-            [
-                "busctl",
-                "--user",
-                "call",
-                "org.kde.kglobalaccel",
-                "/kglobalaccel",
-                "org.kde.KGlobalAccel",
-                "setShortcut",
-                "asaiu",
-                "4",
-                desktop_id,
-                "_launch",
-                shortcut_name,
-                shortcut_name,
-                str(len(codes)),
-                *[str(code) for code in codes],
-                "6",
-            ]
-        )
+        set_global_shortcut_codes(desktop_id, shortcut_name, codes)
 
 
 def register_folder_template_shortcuts(templates: list[dict[str, object]]) -> None:
@@ -1544,7 +1598,9 @@ def unregister_shortcut(shortcut: str) -> None:
                 "",
             ]
         )
-    desktop_path.unlink(missing_ok=True)
+    if desktop_path.exists():
+        desktop_path.unlink()
+        mark_desktop_cache_dirty()
 
 
 def unregister_mouse_sequence_desktop_id(desktop_id: str) -> None:
@@ -1580,7 +1636,9 @@ def unregister_mouse_sequence_desktop_id(desktop_id: str) -> None:
                 "",
             ]
         )
-    desktop_path.unlink(missing_ok=True)
+    if desktop_path.exists():
+        desktop_path.unlink()
+        mark_desktop_cache_dirty()
 
 
 def unregister_folder_template_desktop_id(desktop_id: str) -> None:
@@ -1616,7 +1674,9 @@ def unregister_folder_template_desktop_id(desktop_id: str) -> None:
                 "",
             ]
         )
-    desktop_path.unlink(missing_ok=True)
+    if desktop_path.exists():
+        desktop_path.unlink()
+        mark_desktop_cache_dirty()
 
 
 def unregister_mouse_sequence_shortcuts() -> None:
@@ -1677,7 +1737,9 @@ def unregister_dialog_shortcut(function_key: str) -> None:
                 "",
             ]
         )
-    desktop_path.unlink(missing_ok=True)
+    if desktop_path.exists():
+        desktop_path.unlink()
+        mark_desktop_cache_dirty()
 
 
 def unregister_emergency_shortcut() -> None:
@@ -1714,7 +1776,9 @@ def unregister_emergency_shortcut() -> None:
                 "",
             ]
         )
-    desktop_path.unlink(missing_ok=True)
+    if desktop_path.exists():
+        desktop_path.unlink()
+        mark_desktop_cache_dirty()
 
 
 def disable_legacy_shortcuts() -> None:
@@ -1739,9 +1803,30 @@ def disable_legacy_shortcuts() -> None:
             )
 
 
-def apply_shortcuts(shortcuts: dict[str, str]) -> None:
+def dialog_shortcut_function_keys(shortcuts: dict[str, str]) -> set[str]:
+    function_keys: set[str] = set()
+    for function_key in FUNCTION_KEYS:
+        target = shortcuts.get(function_key, "").strip()
+        dialog_shortcut = shortcut_label(DIALOG_MODIFIER, function_key)
+        if target and Path(target).expanduser().is_dir() and dialog_shortcut not in shortcuts:
+            function_keys.add(function_key)
+    return function_keys
+
+
+def unregister_dialog_shortcuts_for(shortcuts: dict[str, str]) -> None:
+    for function_key in dialog_shortcut_function_keys(shortcuts):
+        unregister_dialog_shortcut(function_key)
+
+
+def apply_shortcuts(
+    shortcuts: dict[str, str],
+    cleanup_missing_function_keys: bool = False,
+) -> None:
     disable_legacy_shortcuts()
-    register_emergency_shortcut()
+    # The emergency/suspend key is handled by the evdev text-replacement
+    # listener. Registering it through KGlobalAccel makes this Plasma/KWin build
+    # crash when F12 is pressed.
+    unregister_emergency_shortcut()
     unregister_mouse_sequence_shortcuts()
     mouse_automations = load_mouse_config().get("automations", [])
     register_mouse_sequence_shortcuts(mouse_automations if isinstance(mouse_automations, list) else [])
@@ -1752,19 +1837,21 @@ def apply_shortcuts(shortcuts: dict[str, str]) -> None:
         if target:
             register_shortcut(shortcut, target)
 
-    for modifier in MODIFIER_OPTIONS:
-        for function_key in FUNCTION_KEYS:
-            shortcut = shortcut_label(modifier, function_key)
-            if shortcut not in shortcuts:
-                unregister_shortcut(shortcut)
+    if cleanup_missing_function_keys:
+        for modifier in MODIFIER_OPTIONS:
+            for function_key in FUNCTION_KEYS:
+                shortcut = shortcut_label(modifier, function_key)
+                if shortcut not in shortcuts:
+                    unregister_shortcut(shortcut)
 
     for function_key in FUNCTION_KEYS:
         target = shortcuts.get(function_key, "").strip()
         dialog_shortcut = shortcut_label(DIALOG_MODIFIER, function_key)
         if target and Path(target).expanduser().is_dir() and dialog_shortcut not in shortcuts:
             register_dialog_shortcut(function_key, str(Path(target).expanduser()))
-        else:
+        elif cleanup_missing_function_keys:
             unregister_dialog_shortcut(function_key)
+    rebuild_desktop_cache_if_dirty()
 
 
 def unregister_configured_shortcuts(shortcuts: dict[str, str]) -> None:
@@ -1772,17 +1859,26 @@ def unregister_configured_shortcuts(shortcuts: dict[str, str]) -> None:
         unregister_shortcut(shortcut)
 
 
-def deactivate_shortcuts() -> None:
+def unregister_non_emergency_shortcuts(cleanup_missing_function_keys: bool = False) -> None:
     disable_legacy_shortcuts()
-    unregister_emergency_shortcut()
     unregister_mouse_sequence_shortcuts()
     unregister_folder_template_shortcuts()
-    unregister_configured_shortcuts(load_shortcuts())
-    for modifier in MODIFIER_OPTIONS:
+    shortcuts = load_shortcuts()
+    unregister_configured_shortcuts(shortcuts)
+    unregister_dialog_shortcuts_for(shortcuts)
+    if cleanup_missing_function_keys:
+        for modifier in MODIFIER_OPTIONS:
+            for function_key in FUNCTION_KEYS:
+                unregister_shortcut(shortcut_label(modifier, function_key))
         for function_key in FUNCTION_KEYS:
-            unregister_shortcut(shortcut_label(modifier, function_key))
-    for function_key in FUNCTION_KEYS:
-        unregister_dialog_shortcut(function_key)
+            unregister_dialog_shortcut(function_key)
+    rebuild_desktop_cache_if_dirty()
+
+
+def deactivate_shortcuts() -> None:
+    unregister_non_emergency_shortcuts(cleanup_missing_function_keys=True)
+    unregister_emergency_shortcut()
+    rebuild_desktop_cache_if_dirty()
 
 
 def check_ydotool(socket: str | None = None) -> str:
@@ -1856,6 +1952,38 @@ def text_replacement_status() -> str:
         if lines:
             return lines[-1]
     return "Text replacement is not running."
+
+
+def suspend_listener_running() -> bool:
+    if not SUSPEND_LISTENER_PID_FILE.exists():
+        return False
+    try:
+        pid = int(SUSPEND_LISTENER_PID_FILE.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def start_suspend_listener(socket: str | None = None) -> None:
+    # The suspend/master key (F12) is handled by this small evdev listener that
+    # runs for the whole lifetime of the tray. It sees the key at the /dev/input
+    # level and toggles the app (abort automations, stop/start text replacement)
+    # without ever asking KGlobalAccel to grab F12 — that path crashes KWin here.
+    if not SUSPEND_LISTENER.exists() or suspend_listener_running():
+        return
+    command = [str(SUSPEND_LISTENER)]
+    if socket:
+        command.extend(["--ydotool-socket", socket])
+    run_detached(command)
+
+
+def stop_suspend_listener() -> None:
+    if SUSPEND_LISTENER.exists():
+        run_checked([str(SUSPEND_LISTENER), "--stop"])
 
 
 def make_item(label: str, callback) -> Gtk.MenuItem:
@@ -1936,7 +2064,9 @@ INPUT_AUTOMATIONS_INFO = (
     "<b>Running</b>\n"
     "Give the automation a trigger hotkey, or use “Copy trigger command” for the "
     "CLI. “Run” tests the current one. “Debug” (global) shows notifications when "
-    "a step fails. <b>F12</b> is an emergency stop."
+    "a step fails. The suspend key (<b>F12</b> by default, configurable in "
+    "Settings) stops a running automation and toggles a global pause for the "
+    "whole tool; press it again (or use the tray menu) to resume."
 )
 
 FOLDER_TEMPLATES_INFO = (
@@ -2009,8 +2139,61 @@ def apply_window_icon() -> None:
         pass
 
 
-def apply_indicator_icon(indicator) -> None:
-    indicator.set_icon_full("preferences-desktop-keyboard", APP_NAME)
+INDICATOR_ICON_PAUSED = "input-pilot-paused"
+INDICATOR_FALLBACK_ACTIVE = "preferences-desktop-keyboard"
+INDICATOR_FALLBACK_PAUSED = "media-playback-pause"
+
+
+def generate_indicator_icons() -> tuple[str, str, str | None]:
+    """Keep the system keyboard icon for the active state, render a crossed-out
+    copy of it for the paused state.
+
+    Returns ``(active_name, paused_name, theme_path)``. The active name is the
+    plain themed icon (resolved from the system theme); the paused name lives in
+    ``theme_path`` and is passed to ``set_icon_theme_path``. Falls back to a
+    themed pause icon if rendering is unavailable.
+    """
+    active = INDICATOR_FALLBACK_ACTIVE
+    try:
+        import cairo
+        gi.require_version("GdkPixbuf", "2.0")
+        from gi.repository import GdkPixbuf  # noqa: F401 — required so savev works
+
+        size = 64
+        pixbuf = Gtk.IconTheme.get_default().load_icon(
+            active, size, Gtk.IconLookupFlags.FORCE_SIZE
+        )
+        if pixbuf is None:
+            return active, INDICATOR_FALLBACK_PAUSED, None
+
+        INDICATOR_ICON_DIR.mkdir(parents=True, exist_ok=True)
+        base_path = INDICATOR_ICON_DIR / "input-pilot-base.png"
+        pixbuf.savev(str(base_path), "png", [], [])
+
+        base = cairo.ImageSurface.create_from_png(str(base_path))
+        width, height = base.get_width(), base.get_height()
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+        ctx = cairo.Context(surface)
+        ctx.set_source_surface(base, 0, 0)
+        ctx.paint_with_alpha(0.55)  # dim the icon so the strike reads clearly
+        ctx.set_line_cap(cairo.LINE_CAP_ROUND)
+        inset = width * 0.16
+        # White halo first, then the red strike, so it stays visible on any panel.
+        ctx.set_source_rgba(1, 1, 1, 0.95)
+        ctx.set_line_width(width * 0.16)
+        ctx.move_to(inset, inset)
+        ctx.line_to(width - inset, height - inset)
+        ctx.stroke()
+        ctx.set_source_rgba(0.85, 0.12, 0.12, 1.0)
+        ctx.set_line_width(width * 0.10)
+        ctx.move_to(inset, inset)
+        ctx.line_to(width - inset, height - inset)
+        ctx.stroke()
+        surface.flush()
+        surface.write_to_png(str(INDICATOR_ICON_DIR / f"{INDICATOR_ICON_PAUSED}.png"))
+        return active, INDICATOR_ICON_PAUSED, str(INDICATOR_ICON_DIR)
+    except Exception:  # noqa: BLE001 — any rendering failure falls back to themed icons
+        return active, INDICATOR_FALLBACK_PAUSED, None
 
 
 class AutomationTray:
@@ -2019,24 +2202,41 @@ class AutomationTray:
         self.ydotool_socket = ydotool_socket
         clear_active_window_state()
         self.dbus_service = AutomationDBusService()
+        self.active_icon, self.paused_icon, icon_theme_path = generate_indicator_icons()
         self.indicator = AppIndicator3.Indicator.new(
             APP_ID,
-            "preferences-desktop-keyboard",
+            self.active_icon,
             AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
         )
+        if icon_theme_path:
+            self.indicator.set_icon_theme_path(icon_theme_path)
+        self.indicator.set_attention_icon_full(self.paused_icon, APP_NAME)
         self.indicator.set_title(APP_NAME)
-        apply_indicator_icon(self.indicator)
         self.indicator.set_label("IP", "IP")
         self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+        self._pause_state = PAUSE_FILE.exists()
+        self._shortcut_pause_state: bool | None = None
+        # Desktop files being present does not guarantee that KGlobalAccel still
+        # has the actions registered, especially after older pause versions
+        # unregistered them. Do one immediate apply for responsiveness and one
+        # deferred apply after startup so a previous process cleanup cannot wipe
+        # the new grabs again.
+        self._shortcut_components_ready = False
+        self._syncing_pause = False
         self.indicator.set_menu(self.build_menu())
+        self.apply_pause_visuals(self._pause_state)
+        GLib.timeout_add(200, self.sync_pause_state)
         GLib.timeout_add_seconds(1, self.activate_shortcuts)
         GLib.timeout_add_seconds(1, self.activate_window_detection)
         GLib.timeout_add_seconds(1, self.activate_ydotool_device_tuning)
         GLib.timeout_add_seconds(1, self.warm_template_server)
         GLib.timeout_add_seconds(1, self.activate_text_replacement)
+        GLib.timeout_add_seconds(1, self.activate_suspend_listener)
 
     def activate_shortcuts(self) -> bool:
-        apply_shortcuts(load_shortcuts())
+        apply_shortcuts(load_shortcuts(), cleanup_missing_function_keys=True)
+        self._shortcut_components_ready = True
+        self._shortcut_pause_state = PAUSE_FILE.exists()
         return False
 
     def activate_window_detection(self) -> bool:
@@ -2053,7 +2253,14 @@ class AutomationTray:
         return False
 
     def activate_text_replacement(self) -> bool:
-        start_text_replacement_engine(self.ydotool_socket)
+        # When the app is suspended, all of its helpers stay off — including text
+        # replacement. The suspend listener resumes them when F12 is pressed.
+        if not PAUSE_FILE.exists():
+            start_text_replacement_engine(self.ydotool_socket)
+        return False
+
+    def activate_suspend_listener(self) -> bool:
+        start_suspend_listener(self.ydotool_socket)
         return False
 
     def build_menu(self) -> Gtk.Menu:
@@ -2063,6 +2270,23 @@ class AutomationTray:
         menu.append(make_item("Textreplacement...", self.show_text_replacement))
         menu.append(make_item("Input Automations...", self.show_mousemove_config))
         menu.append(make_item("Folder Templates...", self.show_folder_templates))
+        menu.append(make_item("Settings...", self.show_settings))
+
+        self.notifications_item = Gtk.CheckMenuItem(label="Turn off notifications")
+        self.notifications_item.set_active(not notifications_enabled())
+        self.notifications_item.connect("toggled", self.on_notifications_toggled)
+        self.notifications_item.show()
+        menu.append(self.notifications_item)
+
+        pause_separator = Gtk.SeparatorMenuItem()
+        pause_separator.show()
+        menu.append(pause_separator)
+
+        self.pause_item = Gtk.CheckMenuItem(label=self._pause_label(self._pause_state))
+        self.pause_item.set_active(self._pause_state)
+        self.pause_item.connect("toggled", self.on_pause_toggled)
+        self.pause_item.show()
+        menu.append(self.pause_item)
 
         separator = Gtk.SeparatorMenuItem()
         separator.show()
@@ -2071,6 +2295,76 @@ class AutomationTray:
         menu.append(make_item("Quit", self.quit))
         menu.show()
         return menu
+
+    @staticmethod
+    def _pause_label(paused: bool) -> str:
+        key = suspend_shortcut()
+        return f"Resume ({key})" if paused else f"Pause / suspend ({key})"
+
+    def on_pause_toggled(self, _item: Gtk.CheckMenuItem) -> None:
+        if self._syncing_pause:
+            return
+        # Toggle through the shared abort/suspend script so the tray menu and
+        # the evdev suspend key drive exactly the same state and side effects.
+        run_detached([str(ABORT_CLICK)])
+        GLib.timeout_add(150, self._sync_pause_once)
+
+    def on_notifications_toggled(self, item: Gtk.CheckMenuItem) -> None:
+        enabled = not item.get_active()
+        set_notifications_enabled(enabled)
+        if enabled:
+            notify(APP_NAME, "Notifications enabled.")
+
+    def _sync_pause_once(self) -> bool:
+        self.sync_pause_state()
+        return False
+
+    def sync_pause_state(self) -> bool:
+        paused = PAUSE_FILE.exists()
+        if paused != self._pause_state:
+            self._pause_state = paused
+            self.apply_pause_visuals(paused)
+        return True
+
+    def apply_shortcut_pause_state(self, paused: bool) -> None:
+        if paused == self._shortcut_pause_state:
+            return
+        # Register every global shortcut exactly once and then NEVER toggle the
+        # KGlobalAccel grabs at runtime. Modifying grabs in response to a keypress
+        # races with kglobalacceld's key handling (GlobalShortcutsRegistry::
+        # processKey) and crashes kwin_wayland on this build. Suspend is therefore
+        # enforced only by the paused file, which every entry point checks: while
+        # suspended a hotkey still fires but the helper sees the paused file and
+        # exits without acting.
+        if not self._shortcut_components_ready:
+            apply_shortcuts(load_shortcuts(), cleanup_missing_function_keys=True)
+            self._shortcut_components_ready = True
+        self._shortcut_pause_state = paused
+
+    def clear_pause_attention(self) -> bool:
+        if self._pause_state:
+            self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+        return False
+
+    def apply_pause_visuals(self, paused: bool) -> None:
+        self.apply_shortcut_pause_state(paused)
+        self.indicator.set_icon_full(
+            self.paused_icon if paused else self.active_icon, APP_NAME
+        )
+        if paused:
+            self.indicator.set_status(AppIndicator3.IndicatorStatus.ATTENTION)
+            GLib.timeout_add(1200, self.clear_pause_attention)
+        else:
+            self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+        self._syncing_pause = True
+        try:
+            self.pause_item.set_active(paused)
+            self.pause_item.set_label(self._pause_label(paused))
+        finally:
+            self._syncing_pause = False
+
+    def shutdown(self) -> None:
+        self.dbus_service.shutdown()
 
     def click_template(self, _item: Gtk.MenuItem) -> None:
         if not self.template.exists():
@@ -2102,6 +2396,8 @@ class AutomationTray:
             automations = save_mouse_config(automations, dialog.debug())
             dialog.set_automations(automations)
             register_mouse_sequence_shortcuts(automations)
+            rebuild_desktop_cache_if_dirty()
+            self._shortcut_components_ready = True
             notify(
                 APP_NAME,
                 f"{len(automations)} input automations saved. Triggers run through Input Pilot.",
@@ -2122,10 +2418,28 @@ class AutomationTray:
             templates = dialog.templates()
             save_folder_templates(templates)
             register_folder_template_shortcuts(templates)
+            rebuild_desktop_cache_if_dirty()
+            self._shortcut_components_ready = True
             notify(APP_NAME, f"{len(templates)} folder templates saved.")
             if response == Gtk.ResponseType.APPLY:
                 command = [str(FOLDER_TEMPLATE_RUNNER), "--index", str(dialog.selected_index())]
                 run_detached(command)
+        dialog.destroy()
+
+    def show_settings(self, _item: Gtk.MenuItem) -> None:
+        current = suspend_shortcut()
+        dialog = SettingsDialog(current)
+        if dialog.run() == Gtk.ResponseType.OK:
+            new_shortcut = dialog.suspend_shortcut()
+            if not new_shortcut:
+                notify(APP_NAME, "Invalid suspend key — keeping the previous one.")
+            elif new_shortcut != current:
+                settings = load_settings()
+                settings["suspend_shortcut"] = new_shortcut
+                save_settings(settings)
+                unregister_emergency_shortcut()
+                self.apply_pause_visuals(self._pause_state)
+                notify(APP_NAME, f"Suspend key set to {new_shortcut}.")
         dialog.destroy()
 
     def show_text_replacement(self, _item: Gtk.MenuItem) -> None:
@@ -2145,23 +2459,34 @@ class AutomationTray:
 
     def show_configuration(self, _item: Gtk.MenuItem) -> None:
         previous_shortcuts = load_shortcuts()
-        dialog = ShortcutConfigDialog(previous_shortcuts)
+        previous_folder_open_mode = load_shortcut_folder_open_mode()
+        dialog = ShortcutConfigDialog(previous_shortcuts, previous_folder_open_mode)
         response = dialog.run()
         if response == Gtk.ResponseType.OK:
             shortcuts = dialog.shortcuts()
-            unregister_configured_shortcuts(previous_shortcuts)
-            save_shortcuts(shortcuts)
-            apply_shortcuts(shortcuts)
+            folder_open_mode = dialog.folder_open_mode()
+            save_shortcuts(shortcuts, folder_open_mode)
+            # Only touch the global-shortcut grabs when the key set actually
+            # changed. Re-registering unchanged keys (unregister + immediately
+            # register) can drop their grabs, so the focused app — e.g. Dolphin
+            # with its built-in F2/F3/F5 — swallows them. Changing only the
+            # folder-open mode must not disturb the registrations.
+            if shortcuts != previous_shortcuts:
+                unregister_configured_shortcuts(previous_shortcuts)
+                unregister_dialog_shortcuts_for(previous_shortcuts)
+                apply_shortcuts(shortcuts)
+                self._shortcut_components_ready = True
             notify(APP_NAME, "Shortcuts saved.")
         dialog.destroy()
 
     def quit(self, _item: Gtk.MenuItem) -> None:
+        self.shutdown()
         deactivate_shortcuts()
         unload_kwin_active_window_script()
         if TEMPLATE_SERVER.exists():
             run_detached([str(TEMPLATE_SERVER), "--stop"])
         stop_text_replacement_engine()
-        self.dbus_service.shutdown()
+        stop_suspend_listener()
         Gtk.main_quit()
 
 
@@ -4284,6 +4609,69 @@ class KeyComboRecorderDialog(Gtk.Dialog):
         return key_name
 
 
+class SettingsDialog(Gtk.Dialog):
+    RECORD_WIDTH = 90
+
+    def __init__(self, current_suspend_shortcut: str) -> None:
+        super().__init__(title="Input Pilot Settings", modal=True)
+        self.set_default_size(440, -1)
+        self.set_border_width(12)
+        self.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        self.add_button("Save", Gtk.ResponseType.OK)
+        self.set_default_response(Gtk.ResponseType.OK)
+
+        content = self.get_content_area()
+        content.set_spacing(10)
+
+        heading = Gtk.Label()
+        heading.set_markup("<b>Suspend / master key</b>")
+        heading.set_xalign(0)
+        content.add(heading)
+
+        description = Gtk.Label(
+            label="Global key that stops anything running and toggles suspend for "
+            "the whole tool. Choose another key if the default clashes with an app "
+            "(e.g. DaVinci Resolve grabbing F12)."
+        )
+        description.set_xalign(0)
+        description.set_line_wrap(True)
+        content.add(description)
+
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.suspend_entry = Gtk.Entry()
+        self.suspend_entry.set_text(
+            canonical_shortcut(current_suspend_shortcut) or current_suspend_shortcut
+        )
+        self.suspend_entry.set_tooltip_text("Type a shortcut or use Record.")
+        record_button = Gtk.Button(label="Record")
+        record_button.set_size_request(self.RECORD_WIDTH, -1)
+        record_button.set_tooltip_text("Record the next key combo")
+        record_button.connect("clicked", self._on_record)
+        row.pack_start(self.suspend_entry, True, True, 0)
+        row.pack_start(record_button, False, False, 0)
+        content.add(row)
+
+        self.show_all()
+
+    def _on_record(self, _button: Gtk.Button) -> None:
+        dialog = KeyComboRecorderDialog(self)
+        if dialog.run() == Gtk.ResponseType.OK and dialog.combo:
+            self.suspend_entry.set_text(canonical_shortcut(dialog.combo))
+        dialog.destroy()
+
+    def suspend_shortcut(self) -> str:
+        """Return the validated shortcut, or '' if empty/unsupported."""
+        shortcut = canonical_shortcut(self.suspend_entry.get_text().strip())
+        if not shortcut:
+            return ""
+        modifier, key = parse_shortcut(shortcut)
+        try:
+            key_codes_for(modifier, key)
+        except ValueError:
+            return ""
+        return shortcut
+
+
 class FolderTemplateDialog(Gtk.Dialog):
     def __init__(self, templates: list[dict[str, object]]) -> None:
         super().__init__(title="Folder Templates")
@@ -4631,7 +5019,11 @@ class ShortcutConfigDialog(Gtk.Dialog):
     BROWSE_WIDTH = 86
     REMOVE_WIDTH = 36
 
-    def __init__(self, shortcuts: dict[str, str]) -> None:
+    def __init__(
+        self,
+        shortcuts: dict[str, str],
+        folder_open_mode: str = FOLDER_OPEN_MODE_DEFAULT,
+    ) -> None:
         super().__init__(title="Hotkeys")
         self.set_default_size(900, 440)
         self.set_border_width(10)
@@ -4680,6 +5072,21 @@ class ShortcutConfigDialog(Gtk.Dialog):
         add_button = Gtk.Button(label="Add")
         add_button.connect("clicked", self._on_add)
         buttons.pack_start(add_button, False, False, 0)
+
+        mode_label = Gtk.Label(label="Folder launch")
+        mode_label.set_margin_start(10)
+        buttons.pack_start(mode_label, False, False, 0)
+
+        self.folder_open_combo = Gtk.ComboBoxText()
+        for mode, label in FOLDER_OPEN_MODE_LABELS.items():
+            self.folder_open_combo.append(mode, label)
+        if folder_open_mode not in FOLDER_OPEN_MODE_LABELS:
+            folder_open_mode = FOLDER_OPEN_MODE_DEFAULT
+        self.folder_open_combo.set_active_id(folder_open_mode)
+        self.folder_open_combo.set_tooltip_text(
+            "How folder hotkeys behave when Dolphin is the active window."
+        )
+        buttons.pack_start(self.folder_open_combo, False, False, 0)
 
         spacer = Gtk.Label()
         buttons.pack_start(spacer, True, True, 0)
@@ -4860,6 +5267,12 @@ class ShortcutConfigDialog(Gtk.Dialog):
                 result[label] = target
         return result
 
+    def folder_open_mode(self) -> str:
+        mode = self.folder_open_combo.get_active_id()
+        if mode in FOLDER_OPEN_MODE_LABELS:
+            return str(mode)
+        return FOLDER_OPEN_MODE_DEFAULT
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Show a small automation tray icon.")
@@ -4923,11 +5336,11 @@ def main() -> int:
     signal.signal(signal.SIGTERM, stop_tray)
 
     apply_window_icon()
-    apply_shortcuts(load_shortcuts())
     tray = AutomationTray(args.template.expanduser(), args.ydotool_socket)
     Gtk.main()
     deactivate_shortcuts()
     unload_kwin_active_window_script()
+    stop_suspend_listener()
     if tray:
         tray.dbus_service.shutdown()
     return 0

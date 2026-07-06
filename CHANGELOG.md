@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Settings window
+
+- **New `Settings…` tray entry** with a small dialog, designed to grow as more
+  options are added.
+- **Configurable suspend / master key**: the global suspend key (default `F12`)
+  can now be rebound from Settings using the same key recorder as the other
+  shortcut fields. Useful when an app such as DaVinci Resolve grabs `F12`. The
+  KDE global shortcut is re-registered immediately and the tray menu label
+  updates to the chosen key.
+
+### Global pause / suspend
+
+- **The suspend key is now a pause toggle**: besides aborting a running template
+  click or automation and releasing held mouse buttons, the suspend key (default
+  `F12`) now toggles a global suspend for the whole tool. While suspended, hotkey
+  path/link targets, text replacements, input automations, and the Dolphin
+  folder-template helper all stop responding. Press it again to resume — it works
+  as a master key independent of the suspended state.
+- **Shared state file**: the suspend state lives in
+  `~/.local/state/wayland-automation/paused`. The F12 shortcut and the tray menu
+  both toggle it through `abort-click-template.sh`, and every entry-point script
+  checks it before acting, so the state is a single source of truth.
+- **Tray menu toggle**: a `Pause / suspend` check item in the tray menu mirrors
+  the F12 state (label flips to `Resume`).
+- **Crossed-out tray icon**: the tray keeps its keyboard icon for the active
+  state and renders a dimmed, red-struck copy of it for the suspended state
+  (drawn at startup into `~/.local/state/wayland-automation/icons`). The
+  indicator also switches to the attention state so KDE keeps it visible while
+  suspended. Falls back to a themed pause icon if rendering is unavailable.
+
 ### Clipboard preservation — copied files survive paste
 
 - **MIME-type-aware save/restore**: the clipboard is now saved and restored with

@@ -18,17 +18,40 @@ CONFIG_FILE = Path.home() / ".config/wayland-automation/shortcuts.json"
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
 LOG_FILE = STATE_DIR / "wayland-automation/configured-shortcuts.log"
 ACTIVE_WINDOW_FILE = STATE_DIR / "wayland-automation/active-window.json"
+PAUSE_FILE = STATE_DIR / "wayland-automation/paused"
 DEFAULT_YDOTOOL_SOCKET = "/tmp/ydotool_socket"
 AUTO_DIALOG_TRIGGER_SETTLE_SECONDS = 0.08
 EXPLICIT_DIALOG_TRIGGER_SETTLE_SECONDS = 0.35
 LOCATION_FOCUS_DELAY_SECONDS = 0.1
+NEW_TAB_SETTLE_SECONDS = 0.18
 PASTE_SETTLE_DELAY_SECONDS = 0.08
 CLIPBOARD_RESTORE_DELAY_SECONDS = 0.7
+# Dolphin's location bar is local and instant, so it needs far less settling
+# than a (possibly network/portal) file dialog. These keep the folder hotkeys
+# snappy while the conservative values above stay for the dialog flow.
+DOLPHIN_TRIGGER_SETTLE_SECONDS = 0.05
+DOLPHIN_FOCUS_DELAY_SECONDS = 0.04
+DOLPHIN_PASTE_SETTLE_SECONDS = 0.03
+DOLPHIN_CLIPBOARD_RESTORE_DELAY_SECONDS = 0.12
+DOLPHIN_NEW_TAB_SETTLE_SECONDS = 0.12
 ACTIVE_WINDOW_MAX_AGE_SECONDS = 6 * 60 * 60
+SHORTCUT_OPTIONS_KEY = "_options"
+FOLDER_OPEN_MODE_DEFAULT = "default"
+FOLDER_OPEN_MODE_ACTIVE_DOLPHIN = "active-dolphin-window"
+FOLDER_OPEN_MODE_NEW_DOLPHIN_TAB = "new-dolphin-tab"
+FOLDER_OPEN_MODES = {
+    FOLDER_OPEN_MODE_DEFAULT,
+    FOLDER_OPEN_MODE_ACTIVE_DOLPHIN,
+    FOLDER_OPEN_MODE_NEW_DOLPHIN_TAB,
+}
 
 
 class AutomationError(RuntimeError):
     pass
+
+
+def is_paused() -> bool:
+    return PAUSE_FILE.exists()
 
 
 def canonical_shortcut(shortcut: str) -> str:
@@ -48,18 +71,42 @@ def canonical_shortcut(shortcut: str) -> str:
     return f"{'+'.join(modifiers)}+{key}" if modifiers else key
 
 
-def load_config() -> dict[str, str]:
+def load_config_data() -> dict[str, object]:
     if not CONFIG_FILE.exists():
         return {}
     with CONFIG_FILE.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
     if not isinstance(data, dict):
         return {}
+    return data
+
+
+def target_from_config_value(value: object) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        return str(value.get("target", "")).strip()
+    return ""
+
+
+def load_config() -> dict[str, str]:
+    data = load_config_data()
     return {
-        canonical_shortcut(str(key)): str(value)
+        canonical_shortcut(str(key)): target
         for key, value in data.items()
+        if not str(key).startswith("_")
         if canonical_shortcut(str(key))
+        for target in (target_from_config_value(value),)
+        if target
     }
+
+
+def load_folder_open_mode(data: dict[str, object]) -> str:
+    options = data.get(SHORTCUT_OPTIONS_KEY)
+    if not isinstance(options, dict):
+        return FOLDER_OPEN_MODE_DEFAULT
+    mode = str(options.get("folder_open_mode", FOLDER_OPEN_MODE_DEFAULT)).strip()
+    return mode if mode in FOLDER_OPEN_MODES else FOLDER_OPEN_MODE_DEFAULT
 
 
 def normalize_target(target: str) -> str:
@@ -103,6 +150,13 @@ _TEXT_ALIAS_TYPES = {
 }
 
 
+def _is_clipboard_marker(mime: str) -> bool:
+    """True for KDE/Klipper hint types (e.g. ``application/x-kde-cutselection``,
+    ``application/x-kde-onlyReplaceEmpty``) that carry no real clipboard payload.
+    Saving/restoring one of these as the clipboard wipes the actual content."""
+    return mime.lower().startswith("application/x-kde-")
+
+
 def _pick_clipboard_type(types: list[str]) -> str | None:
     """Pick the single richest MIME type to preserve from a clipboard offer.
 
@@ -126,14 +180,19 @@ def _pick_clipboard_type(types: list[str]) -> str | None:
             return candidate
     for candidate in types:  # any other non-text, non-marker payload
         lowered = candidate.lower()
-        if lowered in _TEXT_ALIAS_TYPES or lowered == "application/x-kde-cutselection":
+        if lowered in _TEXT_ALIAS_TYPES or _is_clipboard_marker(lowered):
             continue
         return candidate
     for preferred in ("text/plain;charset=utf-8", "utf8_string", "text/plain"):
         match = first(preferred)
         if match:
             return match
-    return types[0] if types else None
+    # Only text aliases and/or KDE hint markers remain; never return a marker
+    # (that would restore an empty clipboard), fall back to any real type.
+    for candidate in types:
+        if not _is_clipboard_marker(candidate.lower()):
+            return candidate
+    return None
 
 
 def save_clipboard() -> tuple[str, bytes] | None:
@@ -226,29 +285,56 @@ def ydotool_key(*events: str) -> None:
         )
 
 
-def open_in_file_dialog(directory: str, trigger_settle_seconds: float) -> None:
+def drive_location_bar(
+    directory: str,
+    trigger_settle_seconds: float,
+    *,
+    new_tab: bool = False,
+    log_prefix: str = "dialog-step",
+    focus_delay: float = LOCATION_FOCUS_DELAY_SECONDS,
+    paste_settle: float = PASTE_SETTLE_DELAY_SECONDS,
+    restore_delay: float = CLIPBOARD_RESTORE_DELAY_SECONDS,
+    new_tab_settle: float = NEW_TAB_SETTLE_SECONDS,
+) -> None:
+    """Type ``directory`` into the focused window's location bar and confirm.
+
+    Works for KDE/GTK file dialogs and for Dolphin (Ctrl+L = "Replace Location").
+    With ``new_tab`` a Ctrl+T is sent first so Dolphin opens a fresh tab before
+    the path is entered. The delays default to the conservative file-dialog
+    values; the Dolphin path overrides them with much shorter ones since its
+    location bar is local and instant.
+    """
     old_clipboard = save_clipboard()
     try:
         set_clipboard(directory)
-        log_event(f"dialog-step clipboard-set target={directory}")
+        log_event(f"{log_prefix} clipboard-set target={directory}")
         # Global shortcuts fire before the physical modifier keys are always up.
         time.sleep(trigger_settle_seconds)
+        if new_tab:
+            # Ctrl+T opens a new Dolphin tab to receive the path.
+            ydotool_key("29:1", "20:1", "20:0", "29:0")
+            log_event(f"{log_prefix} sent=ctrl+t")
+            time.sleep(new_tab_settle)
         # Ctrl+L focuses the location field in common KDE/GTK file dialogs.
         ydotool_key("29:1", "38:1", "38:0", "29:0")
-        log_event("dialog-step sent=ctrl+l")
-        time.sleep(LOCATION_FOCUS_DELAY_SECONDS)
+        log_event(f"{log_prefix} sent=ctrl+l")
+        time.sleep(focus_delay)
         ydotool_key("29:1", "30:1", "30:0", "29:0")
-        log_event("dialog-step sent=ctrl+a")
+        log_event(f"{log_prefix} sent=ctrl+a")
         ydotool_key("29:1", "47:1", "47:0", "29:0")
-        log_event("dialog-step sent=ctrl+v")
-        time.sleep(PASTE_SETTLE_DELAY_SECONDS)
+        log_event(f"{log_prefix} sent=ctrl+v")
+        time.sleep(paste_settle)
         ydotool_key("28:1", "28:0")
-        log_event("dialog-step sent=enter")
+        log_event(f"{log_prefix} sent=enter")
     finally:
         if old_clipboard is not None:
-            time.sleep(CLIPBOARD_RESTORE_DELAY_SECONDS)
+            time.sleep(restore_delay)
             restore_clipboard(old_clipboard)
-            log_event(f"dialog-step clipboard-restored type={old_clipboard[0]}")
+            log_event(f"{log_prefix} clipboard-restored type={old_clipboard[0]}")
+
+
+def open_in_file_dialog(directory: str, trigger_settle_seconds: float) -> None:
+    drive_location_bar(directory, trigger_settle_seconds)
 
 
 def active_window_is_file_dialog() -> bool:
@@ -282,6 +368,55 @@ def active_window_is_file_dialog() -> bool:
     return is_file_dialog
 
 
+def active_window_is_dolphin() -> bool:
+    """True when the most recently focused window is a Dolphin window.
+
+    Dolphin exposes no D-Bus method to change the current view's URL, so the
+    Dolphin folder modes drive the *focused* window's location bar instead. That
+    only makes sense when Dolphin actually holds the focus.
+    """
+    try:
+        with ACTIVE_WINDOW_FILE.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return False
+    haystack = " ".join(
+        str(data.get(key, ""))
+        for key in ("caption", "resource_class", "resource_name")
+    ).lower()
+    return "dolphin" in haystack
+
+
+def open_folder_target(directory: str, folder_open_mode: str) -> None:
+    if folder_open_mode == FOLDER_OPEN_MODE_DEFAULT:
+        subprocess.Popen(["xdg-open", directory], start_new_session=True)
+        return
+
+    # The Dolphin modes navigate the focused window via its location bar
+    # (Ctrl+L); fall back to a fresh window when Dolphin is not in front.
+    if not active_window_is_dolphin():
+        log_event(f"dolphin-open fallback reason=no-active-dolphin mode={folder_open_mode}")
+        subprocess.Popen(["xdg-open", directory], start_new_session=True)
+        return
+
+    new_tab = folder_open_mode == FOLDER_OPEN_MODE_NEW_DOLPHIN_TAB
+    try:
+        drive_location_bar(
+            directory,
+            DOLPHIN_TRIGGER_SETTLE_SECONDS,
+            new_tab=new_tab,
+            log_prefix="dolphin-step",
+            focus_delay=DOLPHIN_FOCUS_DELAY_SECONDS,
+            paste_settle=DOLPHIN_PASTE_SETTLE_SECONDS,
+            restore_delay=DOLPHIN_CLIPBOARD_RESTORE_DELAY_SECONDS,
+            new_tab_settle=DOLPHIN_NEW_TAB_SETTLE_SECONDS,
+        )
+        log_event(f"dolphin-open mode={folder_open_mode} via=location-bar new_tab={new_tab}")
+    except AutomationError as exc:
+        log_event(f"dolphin-open failed mode={folder_open_mode} exc={exc!r}")
+        subprocess.Popen(["xdg-open", directory], start_new_session=True)
+
+
 def main() -> int:
     auto_mode = False
     dialog_mode = False
@@ -297,6 +432,12 @@ def main() -> int:
         print("Usage: open-configured-target.py [--auto|--dialog] F1", file=sys.stderr)
         return 2
 
+    if is_paused():
+        log_event(f"paused skip key={args[0]}")
+        return 0
+
+    config_data = load_config_data()
+    folder_open_mode = load_folder_open_mode(config_data)
     key = canonical_shortcut(args[0])
     target = load_config().get(key, "").strip()
     if not target:
@@ -322,8 +463,11 @@ def main() -> int:
             return 1
         return 0
 
-    log_invocation(key, normalized, "open")
-    subprocess.Popen(["xdg-open", normalized], start_new_session=True)
+    log_invocation(key, normalized, f"open:{folder_open_mode}")
+    if Path(normalized).is_dir():
+        open_folder_target(normalized, folder_open_mode)
+    else:
+        subprocess.Popen(["xdg-open", normalized], start_new_session=True)
     return 0
 
 

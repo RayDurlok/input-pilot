@@ -28,6 +28,7 @@ AUTOMATION_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{5,63}$")
 STATE_DIR = Path.home() / ".local/state/wayland-automation"
 SEQUENCE_LOG_FILE = STATE_DIR / "mouse-sequence.log"
 SEQUENCE_ABORT_FILE = STATE_DIR / "mouse-sequence.abort"
+PAUSE_FILE = STATE_DIR / "paused"
 SEQUENCE_LOCK_MAX_AGE = 30.0
 MAX_SEQUENCE_JUMPS = 3
 MODIFIER_KEY_CODES = {
@@ -171,6 +172,10 @@ def log_sequence(message: str) -> None:
 
 def sequence_abort_requested() -> bool:
     return SEQUENCE_ABORT_FILE.exists()
+
+
+def is_paused() -> bool:
+    return PAUSE_FILE.exists()
 
 
 def ensure_sequence_not_aborted() -> None:
@@ -1219,6 +1224,9 @@ def run_steps_range(
 
 
 def run_sequence(config_file: Path, ydotool_socket: str | None, index: int) -> int:
+    if is_paused():
+        log_sequence(f"paused skip index={index}")
+        return 0
     automation = load_automation(config_file, index)
     # Debug is a global setting; fall back to a legacy per-automation flag.
     debug = load_global_debug(config_file) or bool(automation.get("debug", False))

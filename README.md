@@ -61,8 +61,16 @@ persistent service once:
 ./install-ydotool-service.sh
 ```
 
-`F12` is a global emergency stop while the tray runs — it aborts any running
-template click or automation and releases held mouse buttons.
+`F12` is a global emergency stop and pause toggle while the tray runs. The first
+press aborts any running template click or automation, releases held mouse
+buttons, and **suspends the whole tool** — hotkeys, text replacement, input
+automations, and folder templates all stop responding and the tray icon gets a
+red strike. The suspend key is a master key: it always toggles suspend on and
+off, independent of the suspended state. Press it again, or toggle `Pause /
+suspend` in the tray menu, to resume.
+
+The key defaults to `F12` and is configurable in **Settings…** — pick another
+shortcut if `F12` clashes with an app (for example DaVinci Resolve grabbing it).
 
 
 ## Tray
@@ -73,6 +81,12 @@ Everything is configured from the tray menu:
 - **Input Automations…** — visual click/drag/move/type sequences
 - **Folder Templates…** — drop template folders into Dolphin
 - **Textreplacement…** — type-as-you-go text snippets
+- **Settings…** — configure the suspend / master key (more options later)
+- **Pause / suspend** — freeze every feature at once (same as the suspend key);
+  the tray icon gets a red strike while suspended
+
+While the tool is suspended the tray keyboard icon switches to a dimmed, red-
+struck variant so you can see at a glance that nothing will fire.
 
 The tray warms a small local template server so OpenCV stays loaded between
 clicks. Template matching uses KWin's `ScreenShot2` API and verifies the last

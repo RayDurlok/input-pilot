@@ -24,6 +24,7 @@ CONFIG_FILE = Path.home() / ".config/wayland-automation/folder-templates.json"
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
 LOG_FILE = STATE_DIR / "wayland-automation/folder-template.log"
 ACTIVE_WINDOW_FILE = STATE_DIR / "wayland-automation/active-window.json"
+PAUSE_FILE = STATE_DIR / "wayland-automation/paused"
 DEFAULT_TEMPLATE_FOLDER = Path.home() / "Templates/Input Pilot Folder Template"
 DEFAULT_YDOTOOL_SOCKET = "/tmp/ydotool_socket"
 TRIGGER_SETTLE_SECONDS = 0.25
@@ -407,6 +408,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Create a folder from an Input Pilot template")
     parser.add_argument("--index", type=int, default=1)
     args = parser.parse_args()
+
+    if PAUSE_FILE.exists():
+        log("paused skip")
+        return 0
 
     templates = load_templates()
     if args.index < 1 or args.index > len(templates):

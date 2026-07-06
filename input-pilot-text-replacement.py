@@ -24,6 +24,7 @@ MOUSE_CONFIG_FILE = Path.home() / ".config/wayland-automation/mousemove-sequence
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
 LOG_FILE = STATE_DIR / "wayland-automation/text-replacement.log"
 PID_FILE = STATE_DIR / "wayland-automation/text-replacement.pid"
+PAUSE_FILE = STATE_DIR / "wayland-automation/paused"
 DEFAULT_YDOTOOL_SOCKET = "/tmp/ydotool_socket"
 SCRIPT_DIR = Path(__file__).resolve().parent
 MOUSE_SEQUENCE_RUNNER = SCRIPT_DIR / "input-pilot-mouse-sequence.py"
@@ -213,6 +214,10 @@ def log(message: str) -> None:
         return
 
 
+def is_paused() -> bool:
+    return PAUSE_FILE.exists()
+
+
 def load_replacements() -> list[Replacement]:
     if not CONFIG_FILE.exists():
         return list(DYNAMIC_REPLACEMENTS)
@@ -350,6 +355,13 @@ _TEXT_ALIAS_TYPES = {
 }
 
 
+def _is_clipboard_marker(mime: str) -> bool:
+    """True for KDE/Klipper hint types (e.g. ``application/x-kde-cutselection``,
+    ``application/x-kde-onlyReplaceEmpty``) that carry no real clipboard payload.
+    Saving/restoring one of these as the clipboard wipes the actual content."""
+    return mime.lower().startswith("application/x-kde-")
+
+
 def _pick_clipboard_type(types: list[str]) -> str | None:
     """Pick the single richest MIME type to preserve from a clipboard offer.
 
@@ -372,14 +384,19 @@ def _pick_clipboard_type(types: list[str]) -> str | None:
             return candidate
     for candidate in types:
         lowered = candidate.lower()
-        if lowered in _TEXT_ALIAS_TYPES or lowered == "application/x-kde-cutselection":
+        if lowered in _TEXT_ALIAS_TYPES or _is_clipboard_marker(lowered):
             continue
         return candidate
     for preferred in ("text/plain;charset=utf-8", "utf8_string", "text/plain"):
         match = first(preferred)
         if match:
             return match
-    return types[0] if types else None
+    # Only text aliases and/or KDE hint markers remain; never return a marker
+    # (that would restore an empty clipboard), fall back to any real type.
+    for candidate in types:
+        if not _is_clipboard_marker(candidate.lower()):
+            return candidate
+    return None
 
 
 def _save_clipboard() -> tuple[str, bytes] | None:
@@ -575,6 +592,12 @@ class ReplacementEngine:
         elif key_value == 0:
             self.keys_down.discard(key_code)
             self.flush_pending_mouse_shortcut()
+            return
+
+        # Global suspend: keep tracking key state above so a resume starts
+        # clean, but trigger nothing while paused.
+        if is_paused():
+            self.pending_mouse_shortcut = None
             return
 
         if key_value == 1 and not self.injecting and self.maybe_trigger_mouse_shortcut(key_code):
