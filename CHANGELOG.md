@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### One-command self-update
+
+- **`input-pilot-update`**: a new launcher (and `update.sh`) updates Input Pilot
+  to the latest release in place — it downloads the release tarball, installs it
+  over the current copy, and restarts the tray. It refuses to run on a git
+  checkout unless `--force`, so a developer install is never clobbered.
+
+### Text replacement — word-boundary triggers
+
+- **Triggers only fire as standalone tokens**: a trigger such as `ig` no longer
+  fires at the end of a longer word like `fertig`. The match now requires a word
+  boundary before the trigger, not just a trailing space.
+
 ### Settings window
 
 - **New `Settings…` tray entry** with a small dialog, designed to grow as more
