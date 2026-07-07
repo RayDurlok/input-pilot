@@ -192,6 +192,13 @@ exec /usr/bin/python3 "${app_dir}/wayland-automation-tray.py" --ydotool-socket /
 EOF
 chmod 0755 "${launcher}"
 
+update_launcher="${bin_dir}/input-pilot-update"
+cat > "${update_launcher}" <<EOF
+#!/usr/bin/env bash
+exec "${app_dir}/update.sh" "\$@"
+EOF
+chmod 0755 "${update_launcher}"
+
 "${app_dir}/install-tray-autostart.sh"
 
 if [[ ! -S /tmp/ydotool_socket ]]; then
@@ -211,3 +218,4 @@ fi
 
 echo "Installed Input Pilot launcher: ${launcher}"
 echo "Start it with: input-pilot"
+echo "Update later with: input-pilot-update"

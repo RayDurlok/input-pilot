@@ -2,6 +2,7 @@
 set -euo pipefail
 
 rm -f "${HOME}/.local/bin/input-pilot"
+rm -f "${HOME}/.local/bin/input-pilot-update"
 rm -f "${HOME}/.config/autostart/wayland-automation-tray.desktop"
 rm -f "${HOME}/.local/share/applications/input-pilot-tray.desktop"
 

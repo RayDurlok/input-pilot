@@ -47,19 +47,26 @@ Remove everything again with `./uninstall.sh`.
 
 ### Update
 
-Update to the latest release the same way — fetch the tarball again and re-run
-the installer. It overwrites the `input-pilot` launcher and the autostart entry
-in place, so your configuration is kept:
+Update to the latest release with a single command:
+
+```bash
+input-pilot-update
+```
+
+It downloads the newest release, installs it over the current one, and restarts
+the tray automatically. Your configuration is kept.
+
+<details>
+<summary>Manual update (without the launcher)</summary>
 
 ```bash
 curl -L https://github.com/RayDurlok/input-pilot/releases/latest/download/input-pilot-linux.tar.gz -o input-pilot-linux.tar.gz
 tar xzf input-pilot-linux.tar.gz
 cd input-pilot
-./install.sh
+./update.sh
 ```
 
-Then restart the tray so the new version loads: quit it from the tray menu (or
-log out and back in) and start it again with `input-pilot`.
+</details>
 
 ### One-time setup
 
