@@ -65,6 +65,15 @@ apply_update() {
 }
 
 main() {
+  # A git checkout means "developer install" — overwriting it with a release
+  # tarball would clobber local work. Refuse unless forced.
+  if [[ -d "${app_dir}/.git" && "${1:-}" != "--force" ]]; then
+    echo "This looks like a git checkout (${app_dir})." >&2
+    echo "Update it with 'git pull' instead, or pass --force to overwrite it" >&2
+    echo "with the latest release." >&2
+    exit 1
+  fi
+
   command -v curl >/dev/null 2>&1 || { echo "update needs curl." >&2; exit 1; }
   command -v tar >/dev/null 2>&1 || { echo "update needs tar." >&2; exit 1; }
 
