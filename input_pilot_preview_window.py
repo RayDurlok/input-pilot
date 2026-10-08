@@ -1,4 +1,4 @@
-"""Quick Look for local images, videos and PDFs, with file navigation."""
+"""Quick Look for local images, audio, videos and PDFs, with file navigation."""
 
 from __future__ import annotations
 
@@ -184,11 +184,13 @@ class PreviewWindow(Gtk.Window):
             except (ValueError, ImportError, RuntimeError, GLib.Error) as exc:
                 self.pdf = None
                 self.show_info(path, f"PDF preview unavailable: {exc}")
-        elif mime and (mime.startswith("video/") or mime.startswith("audio/")):
+        elif (mime and mime.startswith(("video/", "audio/"))) or path.suffix.lower() in {".wav", ".mp3"}:
+            audio_only = bool(mime and mime.startswith("audio/")) or path.suffix.lower() in {".wav", ".mp3"}
             try:
-                self.show_video(path)
+                self.show_video(path, audio_only=audio_only)
             except (ValueError, ImportError, RuntimeError, GLib.Error) as exc:
-                self.show_info(path, f"Video preview unavailable: {exc}")
+                self.stop_media()
+                self.show_info(path, f"{'Audio' if audio_only else 'Video'} preview unavailable: {exc}")
         else:
             self.show_info(path, "No preview available for this file type.")
         self.content.show_all()
@@ -215,20 +217,31 @@ class PreviewWindow(Gtk.Window):
         controls.pack_end(fit, False, False, 0)
         self.content.pack_start(controls, False, False, 0)
 
-    def show_video(self, path):
+    def show_video(self, path, audio_only=False):
         gi.require_version("Gst", "1.0")
         from gi.repository import Gst
 
         self.gst = Gst
         Gst.init(None)
         player = Gst.ElementFactory.make("playbin", None)
-        sink = Gst.ElementFactory.make("gtksink", None)
-        if player is None or sink is None:
-            raise RuntimeError("install GStreamer playbin and the GTK video sink")
+        if player is None:
+            raise RuntimeError("install GStreamer playbin")
         self.player = player
-        player.set_property("video-sink", sink)
+        if audio_only:
+            # GstPlayFlags: disable VIDEO (1) and VIS (8). Audio playback must
+            # not depend on the GTK video sink or wait for a video frame.
+            player.set_property("flags", int(player.get_property("flags")) & ~(1 | 8))
+            icon = Gtk.Image.new_from_icon_name("audio-x-generic", Gtk.IconSize.DIALOG)
+            icon.set_pixel_size(96)
+            self.content.pack_start(icon, True, True, 0)
+            self.content.pack_start(Gtk.Label(label="Audio preview"), False, False, 0)
+        else:
+            sink = Gst.ElementFactory.make("gtksink", None)
+            if sink is None:
+                raise RuntimeError("install the GStreamer GTK video sink")
+            player.set_property("video-sink", sink)
+            self.content.pack_start(sink.get_property("widget"), True, True, 0)
         player.set_property("uri", path.as_uri())
-        self.content.pack_start(sink.get_property("widget"), True, True, 0)
         controls = Gtk.Box(spacing=8)
         self.play_button = Gtk.Button(label="Pause")
         self.play_button.connect("clicked", self.toggle_play)
@@ -237,12 +250,15 @@ class PreviewWindow(Gtk.Window):
         self.timeline.set_draw_value(False)
         self.timeline.connect("change-value", self.seek)
         controls.pack_start(self.timeline, True, True, 0)
+        self.time_label = Gtk.Label(label="0:00 / —")
+        controls.pack_end(self.time_label, False, False, 0)
         self.content.pack_start(controls, False, False, 0)
         self.video_bus = player.get_bus()
         self.video_bus.add_signal_watch()
         self.video_handler = self.video_bus.connect("message", self.on_video_message)
         self.playing = True
-        player.set_state(Gst.State.PLAYING)
+        if player.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
+            raise RuntimeError("GStreamer could not start playback")
         self.timeline_timer = GLib.timeout_add(250, self.update_timeline)
 
     def toggle_play(self, _button):
@@ -264,6 +280,10 @@ class PreviewWindow(Gtk.Window):
         pos_ok, position = self.player.query_position(self.gst.Format.TIME)
         if ok and pos_ok and duration > 0:
             self.timeline.set_value(position / duration * 100)
+            def timestamp(value):
+                seconds = max(0, int(value / self.gst.SECOND))
+                return f"{seconds // 60}:{seconds % 60:02d}"
+            self.time_label.set_text(f"{timestamp(position)} / {timestamp(duration)}")
         return True
 
     def on_video_message(self, bus, message):

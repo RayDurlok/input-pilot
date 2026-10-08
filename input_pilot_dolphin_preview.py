@@ -8,6 +8,7 @@ selection from the current item: Dolphin can focus an unselected item.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
 import os
 import subprocess
@@ -168,6 +169,20 @@ class FilePreviewNavigator:
         return None
 
 
+@contextmanager
+def paused_window_updates(get_updates, set_updates):
+    """Keep the original selection on screen during the URI-list snapshot."""
+    enabled = get_updates()
+    try:
+        if enabled:
+            set_updates(False)
+        yield
+    finally:
+        # Restore painting even if copying or restoring the selection fails.
+        if enabled:
+            set_updates(True)
+
+
 def snapshot_navigation(view, item, initial_uri, copy_action, source_valid):
     """Read Dolphin's ordered URI list while it still owns keyboard focus.
 
@@ -302,7 +317,17 @@ def preview_selection(expected: dict) -> bool:
                 and current_title() == window_title
                 and target[0].get_state_set().contains(Atspi.StateType.SHOWING))
 
-    paths, index = snapshot_navigation(target[0], target[1], uri, copy_action, context_valid)
+    def get_updates():
+        return call(path, "org.freedesktop.DBus.Properties", "Get",
+                    GLib.Variant("(ss)", ("org.qtproject.Qt.QWidget", "updatesEnabled")))[0]
+
+    def set_updates(enabled):
+        call(path, "org.freedesktop.DBus.Properties", "Set",
+             GLib.Variant("(ssv)", ("org.qtproject.Qt.QWidget", "updatesEnabled",
+                                    GLib.Variant("b", enabled))))
+
+    with paused_window_updates(get_updates, set_updates):
+        paths, index = snapshot_navigation(target[0], target[1], uri, copy_action, context_valid)
     if not still_valid():
         return False
     navigator = FilePreviewNavigator(paths, index, source_valid)

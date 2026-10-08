@@ -120,10 +120,12 @@ search, keeping repeated actions fast.
 ## Dolphin Quick Look
 
 Enable **Quick Look with Space (Dolphin)** in the tray's right-click menu.
-Select one image, video or PDF in Dolphin, then press and release Space to
+Select one image, video, audio file (including WAV and MP3), or PDF in Dolphin, then press and release Space to
 preview it. Right/Down shows the next file, Left/Up the previous file, using a
 snapshot of Dolphin's displayed order. The original Dolphin selection is kept.
-Space or Escape closes the preview; videos have Play/Pause and a seek bar.
+Space or Escape closes the preview; audio and video have Play/Pause, a seek bar,
+and elapsed/total time. Audio starts automatically and uses a dedicated audio
+view without requiring the GTK video sink.
 PDFs render in the preview window; use Page Up/Page Down or the page buttons to
 move between PDF pages. Arrow keys continue to switch files, including for PDFs.
 Use the scroll wheel over an image or PDF to zoom around the pointer. Drag with
@@ -146,11 +148,15 @@ Only local files and an unambiguous active Dolphin file view are supported.
 No preview opens for zero/multiple selections, an active text field or menu,
 or a split view where the active pane cannot be identified safely. Modified
 Space shortcuts are ignored. Dolphin's native selection-mode shortcut still
-receives Space; Quick Look leaves that mode when it previews an item. The
+receives Space; Quick Look leaves that mode when it previews an item. To avoid
+the selection-mode flash, change Dolphin’s **Select Files and Folders** shortcut
+from Space to Shift+Space in Dolphin’s shortcut settings. This is a separate
+Dolphin preference; Input Pilot does not change it automatically. The
 selected file URL and the navigation list are read through Dolphin's Copy
 shortcut while Dolphin has focus, with clipboard save/restore protection.
-The temporary selection used to read the list is restored before the preview
-opens. Nothing is launched in the file's default app.
+Window painting is suspended while the navigation list is read, so the
+temporary all-selection is not displayed. The original selection and painting
+state are restored before the preview opens. Nothing is launched in the file's default app.
 
 ## Hotkeys
 

@@ -177,6 +177,26 @@ class NavigationTests(unittest.TestCase):
             self.assertEqual(view.selected, [items[1]])
 
 
+class WindowUpdatesTests(unittest.TestCase):
+    def test_painting_restored_after_success_and_failure(self):
+        for fail in (False, True):
+            events = []
+            try:
+                with preview.paused_window_updates(lambda: True, events.append):
+                    self.assertEqual(events, [False])
+                    if fail:
+                        raise OSError("clipboard unavailable")
+            except OSError:
+                pass
+            self.assertEqual(events, [False, True])
+
+    def test_already_disabled_painting_is_preserved(self):
+        setter = Mock()
+        with preview.paused_window_updates(lambda: False, setter):
+            pass
+        setter.assert_not_called()
+
+
 class ClipboardTests(unittest.TestCase):
     def test_waits_for_new_uri_offer_and_restores_saved_clipboard(self):
         clipboard = {"save_clipboard": Mock(return_value=("text/plain", b"saved")),
