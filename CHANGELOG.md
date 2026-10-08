@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Optional Dolphin Quick Look
+
+- Added the persistent, default-off **Quick Look with Space (Dolphin)** tray
+  toggle. Space previews one selected local image or video; Space/Escape closes
+  the preview. Videos include playback and seeking controls; folders and other
+  file types show basic information.
+- Ignores multiple selections, text input, modifier combinations, and ambiguous
+  views. Respects global pause and checks the active window again before acting.
+- Reads Dolphin's live window title so previews keep working after folder or
+  tab navigation without having to switch away from Dolphin and back.
+- Right/Down and Left/Up browse the next/previous files in Dolphin's displayed
+  order, preserving the original selection. Switching files stops old playback.
+- Added PDF rendering with page buttons and Page Up/Page Down navigation.
+- Images and PDFs support pointer-centered scroll-wheel zoom, dragging to pan,
+  and double-click or Fit to reset. Images retain their original resolution.
+- Waits for a fresh Wayland clipboard offer, preventing old copied file paths
+  from being mistaken for the selected file or the navigation list.
+
 ### One-command self-update
 
 - **`input-pilot-update`**: a new launcher (and `update.sh`) updates Input Pilot

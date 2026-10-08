@@ -105,6 +105,7 @@ Everything is configured from the tray menu:
 - **Folder Templates…** — drop template folders into Dolphin
 - **Textreplacement…** — type-as-you-go text snippets
 - **Settings…** — configure the suspend / master key (more options later)
+- **Quick Look with Space (Dolphin)** — optional single-item preview (off by default)
 - **Pause / suspend** — freeze every feature at once (same as the suspend key);
   the tray icon gets a red strike while suspended
 
@@ -115,6 +116,41 @@ The tray warms a small local template server so OpenCV stays loaded between
 clicks. Template matching uses KWin's `ScreenShot2` API and verifies the last
 known position with a small cached screenshot before falling back to a full
 search, keeping repeated actions fast.
+
+## Dolphin Quick Look
+
+Enable **Quick Look with Space (Dolphin)** in the tray's right-click menu.
+Select one image, video or PDF in Dolphin, then press and release Space to
+preview it. Right/Down shows the next file, Left/Up the previous file, using a
+snapshot of Dolphin's displayed order. The original Dolphin selection is kept.
+Space or Escape closes the preview; videos have Play/Pause and a seek bar.
+PDFs render in the preview window; use Page Up/Page Down or the page buttons to
+move between PDF pages. Arrow keys continue to switch files, including for PDFs.
+Use the scroll wheel over an image or PDF to zoom around the pointer. Drag with
+the left mouse button to pan; double-click or press **Fit** to reset the view.
+Images use their original resolution, and PDFs stay sharp while zooming. Opening
+another file or PDF page resets the zoom to fit.
+Folders and unsupported file types show basic information. The preference is
+saved, and global pause also disables Quick Look and closes its preview.
+
+The feature uses the existing keyboard listener and Qt's AT-SPI accessibility
+bridge (enabled when you turn it on). It requires the `Atspi 2.0` Python GI
+binding; video playback additionally needs GStreamer `playbin`, `gtksink`, and
+codecs for the selected format. On Fedora these are provided by `at-spi2-core`,
+`gstreamer1-plugins-base`, and `gstreamer1-plugins-good-gtk`, plus the relevant
+codec packages. PDF preview requires the Poppler GI binding (`poppler-glib` on
+Fedora). Image and PDF rendering require Python Cairo. Missing media support
+produces a message in the preview.
+
+Only local files and an unambiguous active Dolphin file view are supported.
+No preview opens for zero/multiple selections, an active text field or menu,
+or a split view where the active pane cannot be identified safely. Modified
+Space shortcuts are ignored. Dolphin's native selection-mode shortcut still
+receives Space; Quick Look leaves that mode when it previews an item. The
+selected file URL and the navigation list are read through Dolphin's Copy
+shortcut while Dolphin has focus, with clipboard save/restore protection.
+The temporary selection used to read the list is restored before the preview
+opens. Nothing is launched in the file's default app.
 
 ## Hotkeys
 

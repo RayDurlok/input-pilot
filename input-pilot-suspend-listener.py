@@ -13,11 +13,13 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from evdev import InputDevice, categorize, ecodes, list_devices
+from input_pilot_dolphin_preview import eligible_window
 
 
 SETTINGS_FILE = Path.home() / ".config/wayland-automation/settings.json"
@@ -189,6 +191,30 @@ class SuspendListener:
         self.shortcut = load_suspend_shortcut()
         self.settings_mtime = SETTINGS_FILE.stat().st_mtime_ns if SETTINGS_FILE.exists() else 0
         self.last_trigger = 0.0
+        self.preview_window: dict = {}
+        self.preview_process = None
+
+    def handle_preview_key(self, key_code: int, key_value: int) -> None:
+        if key_code != ecodes.KEY_SPACE:
+            if key_value:
+                self.preview_window = {}
+            return
+        if key_value == 1:
+            busy = self.preview_process is not None and self.preview_process.poll() is None
+            self.preview_window = eligible_window() if not self.modifiers_down and not busy else {}
+        elif key_value == 0:
+            expected, self.preview_window = self.preview_window, {}
+            if expected and not self.modifiers_down and eligible_window() == expected:
+                self.preview_process = subprocess.Popen(
+                    [sys.executable, str(SCRIPT_DIR / "input_pilot_dolphin_preview.py"),
+                     "--window", json.dumps(expected)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    env=dict(os.environ, YDOTOOL_SOCKET=self.socket_path or DEFAULT_YDOTOOL_SOCKET),
+                )
+
+    def stop_preview(self) -> None:
+        if self.preview_process is not None and self.preview_process.poll() is None:
+            self.preview_process.terminate()
 
     def refresh_settings(self) -> None:
         mtime = SETTINGS_FILE.stat().st_mtime_ns if SETTINGS_FILE.exists() else 0
@@ -205,6 +231,14 @@ class SuspendListener:
         )
 
     def handle_key(self, key_code: int, key_value: int) -> None:
+        # A configured Space master key takes precedence over Quick Look.
+        if key_code == ecodes.KEY_SPACE or key_value == 1:
+            self.refresh_settings()
+        if self.shortcut.key != "Space" or self.shortcut.modifiers:
+            try:
+                self.handle_preview_key(key_code, key_value)
+            except OSError as exc:
+                log(f"could not start Dolphin preview: {exc}")
         if key_code in MODIFIER_KEYS:
             if key_value:
                 self.modifiers_down.add(key_code)
@@ -216,7 +250,6 @@ class SuspendListener:
         key_name = SHORTCUT_KEY_NAMES.get(key_code)
         if not key_name:
             return
-        self.refresh_settings()
         if key_name != self.shortcut.key or self.active_modifiers() != self.shortcut.modifiers:
             return
         now = time.monotonic()
@@ -242,6 +275,10 @@ async def run_listener(socket_path: str | None) -> int:
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
     listener = SuspendListener(socket_path)
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, task.cancel)
     try:
         devices = keyboard_devices()
     except PermissionError:
@@ -260,6 +297,7 @@ async def run_listener(socket_path: str | None) -> int:
     try:
         await asyncio.gather(*tasks)
     finally:
+        listener.stop_preview()
         for task in tasks:
             task.cancel()
         for device in devices:
@@ -295,7 +333,10 @@ def main() -> int:
     args = parse_args()
     if args.stop:
         return stop_listener()
-    return asyncio.run(run_listener(args.ydotool_socket))
+    try:
+        return asyncio.run(run_listener(args.ydotool_socket))
+    except asyncio.CancelledError:
+        return 0
 
 
 if __name__ == "__main__":

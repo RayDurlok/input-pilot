@@ -15,6 +15,7 @@ import subprocess
 import uuid
 from datetime import datetime
 from pathlib import Path
+from input_pilot_dolphin_preview import SETTING as QUICK_LOOK_SETTING, enable_accessibility
 
 import gi
 
@@ -2260,6 +2261,11 @@ class AutomationTray:
         return False
 
     def activate_suspend_listener(self) -> bool:
+        if load_settings().get(QUICK_LOOK_SETTING) is True:
+            try:
+                enable_accessibility()
+            except Exception as exc:
+                notify(APP_NAME, f"Dolphin Quick Look unavailable: {exc}")
         start_suspend_listener(self.ydotool_socket)
         return False
 
@@ -2271,6 +2277,12 @@ class AutomationTray:
         menu.append(make_item("Input Automations...", self.show_mousemove_config))
         menu.append(make_item("Folder Templates...", self.show_folder_templates))
         menu.append(make_item("Settings...", self.show_settings))
+
+        self.quick_look_item = Gtk.CheckMenuItem(label="Quick Look with Space (Dolphin)")
+        self.quick_look_item.set_active(load_settings().get(QUICK_LOOK_SETTING) is True)
+        self.quick_look_item.connect("toggled", self.on_quick_look_toggled)
+        menu.append(self.quick_look_item)
+        self.quick_look_item.show()
 
         self.notifications_item = Gtk.CheckMenuItem(label="Turn off notifications")
         self.notifications_item.set_active(not notifications_enabled())
@@ -2314,6 +2326,19 @@ class AutomationTray:
         set_notifications_enabled(enabled)
         if enabled:
             notify(APP_NAME, "Notifications enabled.")
+
+    def on_quick_look_toggled(self, item: Gtk.CheckMenuItem) -> None:
+        enabled = item.get_active()
+        if enabled:
+            try:
+                enable_accessibility()
+            except Exception as exc:
+                item.set_active(False)
+                notify(APP_NAME, f"Dolphin Quick Look unavailable: {exc}")
+                return
+        settings = load_settings()
+        settings[QUICK_LOOK_SETTING] = enabled
+        save_settings(settings)
 
     def _sync_pause_once(self) -> bool:
         self.sync_pause_state()
