@@ -123,6 +123,8 @@ Enable **Quick Look with Space (Dolphin)** in the tray's right-click menu.
 Select one image, video, audio file (including WAV and MP3), or PDF in Dolphin, then press and release Space to
 preview it. Right/Down shows the next file, Left/Up the previous file, using a
 snapshot of Dolphin's displayed order. The original Dolphin selection is kept.
+Quick Look prepares its runtime while Space is held, then validates the selection
+and opens on release. Another key or a focus change cancels the preparation.
 Space or Escape closes the preview; audio and video have Play/Pause, a seek bar,
 and elapsed/total time. Audio starts automatically and uses a dedicated audio
 view without requiring the GTK video sink.

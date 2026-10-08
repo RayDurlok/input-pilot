@@ -12,6 +12,7 @@ from contextlib import contextmanager
 import json
 import os
 import subprocess
+import sys
 import time
 import runpy
 from pathlib import Path
@@ -272,7 +273,10 @@ def preview_selection(expected: dict) -> bool:
         target[1].clear_cache()
         return context_valid() and find_single_selection(frame, Atspi) == target
 
-    if not still_valid():
+    # The full selection scan above is fresh; only the window context needs
+    # rechecking before querying/leaving selection mode. Clipboard reads below
+    # validate the selection again immediately around the copy operation.
+    if not context_valid():
         return False
     action_path = path + "/actions/toggle_selection_mode"
     checked = call(action_path, "org.freedesktop.DBus.Properties", "Get",
@@ -284,8 +288,6 @@ def preview_selection(expected: dict) -> bool:
     if call(action_path, "org.freedesktop.DBus.Properties", "Get",
             GLib.Variant("(ss)", ("org.qtproject.Qt.QAction", "checked")))[0]:
         return False
-    if not still_valid():
-        return False
     def copy_action():
         # Qt/Wayland may acknowledge activateAction(edit_copy) without publishing
         # a fresh clipboard offer. A real shortcut provides the input serial
@@ -294,12 +296,12 @@ def preview_selection(expected: dict) -> bool:
             return (False,)
         env = dict(os.environ)
         env.setdefault("YDOTOOL_SOCKET", "/tmp/ydotool_socket")
-        result = subprocess.run(["ydotool", "key", "29:1", "46:1", "46:0", "29:0"],
+        result = subprocess.run(["ydotool", "key", "--key-delay=1", "29:1", "46:1", "46:0", "29:0"],
                                 env=env, timeout=1, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return (result.returncode == 0,)
 
     uri = selected_uri(copy_action, still_valid)
-    if uri is None or not still_valid():
+    if uri is None:
         return False
     file_path = local_path(uri)
     if file_path is None:
@@ -345,9 +347,10 @@ def selected_uris(copy_action, still_valid) -> list[str] | None:
     clipboard = runpy.run_path(str(Path(__file__).with_name("input-pilot-folder-template.py")))
     saved = clipboard["save_clipboard"]()
     # A nonempty clipboard we cannot snapshot must not be overwritten.
-    listing = subprocess.run(["wl-paste", "--list-types"], capture_output=True, timeout=1)
-    if saved is None and listing.returncode == 0 and listing.stdout.strip():
-        return None
+    if saved is None:
+        listing = subprocess.run(["wl-paste", "--list-types"], capture_output=True, timeout=1)
+        if listing.returncode == 0 and listing.stdout.strip():
+            return None
     try:
         if not still_valid():
             return None
@@ -360,9 +363,14 @@ def selected_uris(copy_action, still_valid) -> list[str] | None:
         if not still_valid() or not copy_action()[0]:
             return None
         deadline = time.monotonic() + 0.8
-        while time.monotonic() < deadline and still_valid():
+        while time.monotonic() < deadline:
             result = subprocess.run(["wl-paste", "--no-newline", "--type", "text/uri-list"],
                                     capture_output=True, text=True, timeout=1)
+            # Validate the result after the read, including focus/selection
+            # changes during clipboard publication. No extra full-window scan
+            # is needed in the caller for this same result.
+            if not still_valid():
+                return None
             if result.returncode == 0:
                 return [line for line in result.stdout.splitlines() if line and not line.startswith("#")]
             time.sleep(0.02)
@@ -377,10 +385,23 @@ def selected_uris(copy_action, still_valid) -> list[str] | None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--window", required=True)
+    parser.add_argument("--wait-for-release", action="store_true",
+                        help="Prepare imports on key-down; preview only after confirmation on stdin")
     args = parser.parse_args()
     try:
-        # Run on release; let Dolphin finish handling its own Space shortcut.
-        time.sleep(0.04)
+        if args.wait_for_release:
+            # Warm the UI and accessibility connection without inspecting or
+            # changing Dolphin's selection. EOF/cancellation never opens a UI.
+            import gi
+            gi.require_version("Atspi", "2.0")
+            from gi.repository import Atspi
+            import input_pilot_preview_window
+
+            Atspi.get_desktop(0)
+            if sys.stdin.readline() != "preview\n":
+                return 0
+        # Live D-Bus/accessibility queries validate Dolphin's settled state;
+        # no fixed sleep is needed before beginning those round trips.
         preview_selection(json.loads(args.window))
     except Exception as exc:
         # Accessibility may disappear as a window closes; never guess a target.

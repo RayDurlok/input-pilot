@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 from pathlib import Path
 import sys
@@ -198,6 +199,35 @@ class WindowUpdatesTests(unittest.TestCase):
 
 
 class ClipboardTests(unittest.TestCase):
+    def test_changed_selection_during_clipboard_read_is_rejected(self):
+        clipboard = {"save_clipboard": Mock(return_value=("text/plain", b"saved")),
+                     "restore_clipboard": Mock()}
+        valid = Mock(return_value=True)
+        copy = Mock(return_value=(True,))
+
+        def run(command, **kwargs):
+            if command[0] == "wl-paste":
+                valid.return_value = False
+                return SimpleNamespace(returncode=0, stdout="file:///tmp/wrong.png\n")
+            return SimpleNamespace(returncode=0)
+
+        with patch.object(preview.runpy, "run_path", return_value=clipboard), \
+             patch.object(preview.subprocess, "run", side_effect=run):
+            self.assertIsNone(preview.selected_uri(copy, valid))
+        copy.assert_called_once()
+        clipboard["restore_clipboard"].assert_called_once_with(("text/plain", b"saved"))
+
+    def test_changed_selection_before_copy_is_rejected(self):
+        clipboard = {"save_clipboard": Mock(return_value=("text/plain", b"saved")),
+                     "restore_clipboard": Mock()}
+        copy = Mock()
+        with patch.object(preview.runpy, "run_path", return_value=clipboard), \
+             patch.object(preview.subprocess, "run") as run:
+            self.assertIsNone(preview.selected_uri(copy, Mock(side_effect=[True, False])))
+        copy.assert_not_called()
+        self.assertEqual(run.call_count, 1)  # Only the private clipboard marker.
+        clipboard["restore_clipboard"].assert_called_once_with(("text/plain", b"saved"))
+
     def test_waits_for_new_uri_offer_and_restores_saved_clipboard(self):
         clipboard = {"save_clipboard": Mock(return_value=("text/plain", b"saved")),
                      "restore_clipboard": Mock()}
@@ -297,25 +327,52 @@ class KeyboardTests(unittest.TestCase):
 
     def test_one_preview_on_release_and_no_repeat_launches(self):
         with patch.object(listener, "eligible_window", return_value=self.window), patch.object(listener.subprocess, "Popen") as spawn:
+            spawn.return_value.poll.return_value = None
             self.subject.handle_key(listener.ecodes.KEY_SPACE, 1)
             self.subject.handle_key(listener.ecodes.KEY_SPACE, 2)
-            spawn.assert_not_called()
+            spawn.assert_called_once()
+            spawn.return_value.stdin.write.assert_not_called()
+            self.subject.handle_key(listener.ecodes.KEY_SPACE, 0)
+            spawn.return_value.stdin.write.assert_called_once_with(b"preview\n")
+            spawn.return_value.stdin.close.assert_called_once()
             self.subject.handle_key(listener.ecodes.KEY_SPACE, 0)
             spawn.assert_called_once()
-            self.subject.handle_key(listener.ecodes.KEY_SPACE, 0)
-            spawn.assert_called_once()
+            spawn.return_value.stdin.write.assert_called_once()
 
     def test_modifier_or_window_change_cancels(self):
         with patch.object(listener, "eligible_window", return_value=self.window) as window, patch.object(listener.subprocess, "Popen") as spawn:
+            spawn.return_value.poll.return_value = None
             self.subject.handle_key(listener.ecodes.KEY_SPACE, 1)
             self.subject.handle_key(listener.ecodes.KEY_LEFTCTRL, 1)
             self.subject.handle_key(listener.ecodes.KEY_LEFTCTRL, 0)
             self.subject.handle_key(listener.ecodes.KEY_SPACE, 0)
-            spawn.assert_not_called()
+            spawn.return_value.stdin.write.assert_not_called()
+            spawn.return_value.terminate.assert_called_once()
+            spawn.return_value.poll.return_value = 0
             self.subject.handle_key(listener.ecodes.KEY_SPACE, 1)
+            spawn.return_value.poll.return_value = None
             window.return_value = {}
             self.subject.handle_key(listener.ecodes.KEY_SPACE, 0)
-            spawn.assert_not_called()
+            spawn.return_value.stdin.write.assert_not_called()
+            self.assertEqual(spawn.return_value.terminate.call_count, 2)
+
+    def test_other_keys_do_not_terminate_an_open_preview(self):
+        self.subject.preview_process = Mock()
+        self.subject.preview_process.poll.return_value = None
+        self.subject.handle_key(listener.ecodes.KEY_RIGHT, 1)
+        self.subject.handle_key(listener.ecodes.KEY_SPACE, 1)
+        self.subject.handle_key(listener.ecodes.KEY_SPACE, 0)
+        self.subject.preview_process.terminate.assert_not_called()
+        self.subject.preview_process.stdin.write.assert_not_called()
+
+    def test_failed_preparation_is_cancelled_on_release(self):
+        with patch.object(listener, "eligible_window", return_value=self.window), \
+             patch.object(listener.subprocess, "Popen") as spawn:
+            spawn.return_value.poll.return_value = 1
+            spawn.return_value.stdin.write.side_effect = BrokenPipeError
+            self.subject.handle_key(listener.ecodes.KEY_SPACE, 1)
+            self.subject.handle_key(listener.ecodes.KEY_SPACE, 0)
+            self.assertEqual(self.subject.preview_window, {})
 
     def test_space_master_key_has_priority(self):
         self.subject.shortcut = listener.Shortcut(frozenset(), "Space")
@@ -324,6 +381,24 @@ class KeyboardTests(unittest.TestCase):
             self.subject.handle_key(listener.ecodes.KEY_SPACE, 0)
             suspend.assert_called_once()
             spawn.assert_not_called()
+
+
+class PreparedPreviewTests(unittest.TestCase):
+    def test_only_release_confirmation_can_open_preview(self):
+        import gi
+        gi.require_version("Atspi", "2.0")
+        from gi.repository import Atspi
+
+        for token in ("", "cancel\n", "preview\n"):
+            with patch.object(sys, "argv", ["preview", "--window", '{"window_pid":123}', "--wait-for-release"]), \
+                 patch.object(sys, "stdin", io.StringIO(token)), \
+                 patch.object(Atspi, "get_desktop"), \
+                 patch.object(preview, "preview_selection") as show:
+                self.assertEqual(preview.main(), 0)
+                if token == "preview\n":
+                    show.assert_called_once_with({"window_pid": 123})
+                else:
+                    show.assert_not_called()
 
 
 if __name__ == "__main__":

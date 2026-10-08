@@ -197,20 +197,39 @@ class SuspendListener:
     def handle_preview_key(self, key_code: int, key_value: int) -> None:
         if key_code != ecodes.KEY_SPACE:
             if key_value:
-                self.preview_window = {}
+                self.cancel_prepared_preview()
             return
         if key_value == 1:
             busy = self.preview_process is not None and self.preview_process.poll() is None
-            self.preview_window = eligible_window() if not self.modifiers_down and not busy else {}
-        elif key_value == 0:
-            expected, self.preview_window = self.preview_window, {}
-            if expected and not self.modifiers_down and eligible_window() == expected:
+            if busy:
+                return
+            self.preview_window = eligible_window() if not self.modifiers_down else {}
+            if self.preview_window:
                 self.preview_process = subprocess.Popen(
                     [sys.executable, str(SCRIPT_DIR / "input_pilot_dolphin_preview.py"),
-                     "--window", json.dumps(expected)],
+                     "--window", json.dumps(self.preview_window), "--wait-for-release"],
+                    stdin=subprocess.PIPE,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     env=dict(os.environ, YDOTOOL_SOCKET=self.socket_path or DEFAULT_YDOTOOL_SOCKET),
                 )
+        elif key_value == 0 and self.preview_window:
+            if self.modifiers_down or eligible_window() != self.preview_window:
+                self.cancel_prepared_preview()
+                return
+            try:
+                self.preview_process.stdin.write(b"preview\n")
+                self.preview_process.stdin.close()
+            except OSError:
+                self.cancel_prepared_preview()
+                return
+            self.preview_window = {}
+
+    def cancel_prepared_preview(self) -> None:
+        if self.preview_window:
+            self.preview_window = {}
+            self.stop_preview()
+            if self.preview_process is not None and self.preview_process.stdin is not None:
+                self.preview_process.stdin.close()
 
     def stop_preview(self) -> None:
         if self.preview_process is not None and self.preview_process.poll() is None:

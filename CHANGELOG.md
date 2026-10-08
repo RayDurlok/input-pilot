@@ -4,6 +4,11 @@
 
 ### Optional Dolphin Quick Look
 
+- Faster startup by reducing copy-shortcut delays and redundant accessibility
+  scans. Clipboard results are validated after reading to reject selection or
+  focus changes during publication.
+- Preload the preview runtime on Space key-down and open only on confirmed
+  release. Cancel on other keys or focus changes; remove the fixed startup sleep.
 - Added the persistent, default-off **Quick Look with Space (Dolphin)** tray
   toggle. Space previews one selected local image or video; Space/Escape closes
   the preview. Videos include playback and seeking controls; folders and other
