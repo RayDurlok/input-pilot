@@ -83,6 +83,12 @@ SHIFT_CHAR_KEYS = {
     ecodes.KEY_SLASH: "_",
     ecodes.KEY_GRAVE: "°",  # German: Shift+^ = ° (degree sign)
 }
+DIGIT_KEY_CODES = {char: code for code, char in CHAR_KEYS.items() if char in "0123456789"}
+CURSOR_KEYS = {
+    ecodes.KEY_LEFT, ecodes.KEY_RIGHT, ecodes.KEY_UP, ecodes.KEY_DOWN,
+    ecodes.KEY_HOME, ecodes.KEY_END, ecodes.KEY_PAGEUP, ecodes.KEY_PAGEDOWN,
+    ecodes.KEY_ENTER, ecodes.KEY_KPENTER, ecodes.KEY_TAB, ecodes.KEY_ESC,
+}
 MODIFIER_KEYS = {
     ecodes.KEY_LEFTCTRL,
     ecodes.KEY_RIGHTCTRL,
@@ -445,6 +451,19 @@ def _clipboard_paste(text: str, socket_path: str | None) -> None:
 
 
 def type_text(text: str, socket_path: str | None) -> None:
+    # Number/date snippets need no Unicode clipboard transport. Sending digit
+    # keys also works in spreadsheet cells whose paste handling is asynchronous.
+    # Keep the same transport for R-prefixed invoice numbers. R has the same
+    # physical key on the German/US layouts supported by this key listener.
+    digits = text.removeprefix("R")
+    if digits and all(char in DIGIT_KEY_CODES for char in digits):
+        events = ([f"{ecodes.KEY_LEFTSHIFT}:1", f"{ecodes.KEY_R}:1",
+                   f"{ecodes.KEY_R}:0", f"{ecodes.KEY_LEFTSHIFT}:0"]
+                  if text.startswith("R") else [])
+        events += [event for char in digits
+                  for event in (f"{DIGIT_KEY_CODES[char]}:1", f"{DIGIT_KEY_CODES[char]}:0")]
+        run_ydotool(["key", "--key-delay=10", *events], socket_path)
+        return
     parts = text.split("{enter}")
     for i, part in enumerate(parts):
         if part:
@@ -549,6 +568,11 @@ class ReplacementEngine:
             log(f"could not trigger mousemove automation {shortcut.name!r}: {exc}")
 
     def update_buffer(self, key_code: int) -> None:
+        # After moving the cursor/cell, old text is no longer adjacent to new
+        # typing. Keeping it here makes word-boundary matching reject triggers.
+        if key_code in CURSOR_KEYS:
+            self.buffer = ""
+            return
         char = None
         if self.shift_down:
             char = SHIFT_CHAR_KEYS.get(key_code)

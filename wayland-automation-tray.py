@@ -59,7 +59,7 @@ DEFAULT_DATE_ENTRIES: list[dict[str, object]] = [
     {"trigger": "rnr.", "date_format": "yyyymmdd", "enabled": True},
 ]
 AUTOMATION_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{5,63}$")
-_DATE_FMT_CHARS_RE = re.compile(r'^(?:yyyy|yy|mm|dd|[.\-_/ ])+$')
+_DATE_FMT_CHARS_RE = re.compile(r'^[A-Z]*(?:yyyy|yy|mm|dd|[.\-_/ ])+[A-Z]*$')
 _DATE_FMT_TOKEN_RE = re.compile(r'yyyy|yy|mm|dd')
 PATH_DISPLAY_PARTS = 4
 OPEN_CONFIGURED_TARGET = SCRIPT_DIR / "open-configured-target.py"
@@ -2033,7 +2033,8 @@ TEXT_REPLACEMENT_INFO = (
     "<b>Dates</b>\n"
     "Put date tokens in the replacement field and the current date is inserted: "
     "<tt>dd</tt> day, <tt>mm</tt> month, <tt>yy</tt>/<tt>yyyy</tt> year. "
-    "Example: <tt>dd.mm.yyyy</tt> → 08.06.2026. Separators . - _ / are allowed.\n\n"
+    "Example: <tt>dd.mm.yyyy</tt> → 08.06.2026. Separators . - _ / are allowed. "
+    "Uppercase prefixes/suffixes are kept: <tt>Ryyyymmdd</tt> → R20260608.\n\n"
     "<b>Requirement</b>\n"
     "Reading what you type needs membership in the “input” group (see the "
     "README’s one-time setup)."

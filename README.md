@@ -235,7 +235,10 @@ Type a trigger followed by space and it is replaced inline. Entries live in
 ]
 ```
 
-Replacements are inserted via clipboard paste (`wl-copy` + `Ctrl+V`), so every
+Numeric-only replacements and R-prefixed invoice numbers are typed directly, avoiding clipboard
+paste handling in spreadsheet cells. Moving with arrow/navigation keys clears
+the remembered text so a new cell starts a fresh trigger.
+Other replacements are inserted via clipboard paste (`wl-copy` + `Ctrl+V`), so every
 Unicode character and special symbol works regardless of keyboard layout. The
 original clipboard is restored afterwards with its MIME type preserved, so a
 copied file (`text/uri-list`) stays pasteable rather than collapsing to plain
@@ -252,8 +255,9 @@ Date snippets use `dd`, `mm`, `yy`, and `yyyy` tokens:
 ]
 ```
 
-All entries are editable in the `Textreplacement…` dialog. Any value made only
-of date tokens and separators (`.` `-` `_` `/`) is stored as a date format.
+All entries are editable in the `Textreplacement…` dialog. Date tokens and
+separators (`.` `-` `_` `/`) may have an uppercase prefix or suffix:
+`Ryyyymmdd` becomes e.g. `R20261015`, using the current date.
 
 ## Folder Templates
 

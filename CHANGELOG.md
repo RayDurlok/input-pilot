@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Text replacement in spreadsheet cells
+
+- Recognize uppercase prefixes/suffixes on date formats, so `Ryyyymmdd` expands
+  to the current date with an R prefix. R-prefixed numbers also use direct typing.
+- Type numeric-only replacements such as `rnr.` directly instead of pasting
+  through the clipboard; keep clipboard insertion for Unicode and other text.
+- Clear the trigger buffer on cursor/cell navigation so text from the previous
+  cell cannot block a new standalone abbreviation.
+
 ### Optional Dolphin Quick Look
 
 - Faster startup by reducing copy-shortcut delays and redundant accessibility
